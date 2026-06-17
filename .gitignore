@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Eval-utility data
+gold/*.db
+gold/*.sqlite
+gold/exports/
+# Keep a small committed seed set under fixtures/seed/; ignore bulk captures.
+fixtures/*.json
+!fixtures/seed/
+
+# Local config / secrets
+.env
+.env.local

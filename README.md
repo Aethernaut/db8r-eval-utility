@@ -40,7 +40,15 @@ db8r-mcts turns one **claim** into a **foraging strategy** — a portfolio of qu
 - **1a Foraging** (claim → queries, **db8r-mcts**) → **foraging recall** (the RL reward), tagged by `generator_version`.
 - **1b Retrieval** (query → docs, **ClaimCheck**) → ClaimCheck retrieval recall.
 
-**Foraging-quality capture** invokes db8r-mcts's *real* generator via a new endpoint **MC-5 `POST /api/v1/foraging-strategy {claim, mode}` → `{generator_version, queries:[{pool,query,strategy,priority,rank,providers}]}`** (read-only; pregame first), then replays each query through ClaimCheck `/search`. Schema: `forage_strategy` + `forage_query` (design note §4.7a/b); `retrieval_judgment` carries `forage_query_id`.
+**Foraging-quality capture** invokes db8r-mcts's *real* generator via **MC-5 `POST /api/v1/foraging-strategy`** (read-only; pregame only — `mode!="pregame"` → 501), then replays each query through ClaimCheck `/search`. Schema: `forage_strategy` + `forage_query` (design note §4.7a/b); `retrieval_judgment` carries `forage_query_id`.
+
+**MC-5 contract — verified live (2026-06-17, db8r-mcts :8000):**
+- **Request:** `{ claim (required), mode="pregame", perspective="supports_claim", count?, role?, proof_standard?, dialectical_context? }`. `mode!="pregame"` → **501**.
+- **`perspective` is a polarity selector** (enum `supports_claim` | `contradicts_claim`; invalid → **422**). `supports_claim` returns an **all-PRO** portfolio; `contradicts_claim` returns **all-CON**. **To capture both polarities for a claim, issue TWO MC-5 calls — one per perspective.** (Still read `pool` per query for robustness; it reflects the perspective.) Foraging recall is naturally computed per polarity.
+- **Response:** `{ mode, generator_version, generator, perspective, claim_type, providers[], queries[], fallback_reason?, claim_decomposition, polarity_reversal, schema_plan? }`. Observed: `generator="llm"`, `claim_type="causal"`, `providers=["serper","tavily"]`, 3 queries.
+- **Each `query`:** `{ pool: "PRO"|"CON", query, strategy (==intent_label), priority, rank, providers[], intent_label, rationale, retrieval_role, target_schema_need_id?, target_statement_label?, target_argument_label?, scheme?, critical_question_family? }`.
+- **`generator_version`** format: `query_generation:{generator}:model={model}:support={N}:contradiction={N}:total_max={N}` (live e.g. `query_generation:llm:model=gpt-4.1-nano:support=3:contradiction=3:total_max=4`). Note `generator` can be `llm` (LLM-assisted path ran) — so the *same claim can yield different portfolios across runs*; capture the full portfolio each time and treat `generator_version` as the comparison key.
+- Richer than the minimal `forage_query` schema — **capture the extras too** (`intent_label`, `rationale`, `retrieval_role`, `scheme`, `critical_question_family`, plus response-level `claim_decomposition`/`polarity_reversal`/`schema_plan`); valuable for per-query attribution / RL credit assignment.
 
 ### Annotation stability (enriching foraging forces no reannotation)
 

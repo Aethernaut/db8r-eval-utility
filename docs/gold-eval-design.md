@@ -222,6 +222,7 @@ The tool has **multiple goals, each a distinct annotation task with its own scre
 - **CC-9** (`/extract`) — required for Mode B (extraction scored independent of retrieval, and the foraging-recall denominator).
 - **CC-5** (`extraction_fidelity`/`match_method` in payload + persisted) — required for §5.3.
 - **MC-5** (db8r-mcts `POST /api/v1/foraging-strategy`) — required for foraging-quality capture (§3.1, §5.1 metric 1a). Read-only; `pregame` mode first.
+- **CC-10a** (ClaimCheck: opt-in full `source_text` on evidence documents + always-on per-claim `statement_offset/length` on `EvidenceExtractedClaim`) — **required for T2 span annotation on *fetched* documents** (Mode A and `/extract`-by-URL). Verified 2026-06-17: `EvidenceDocument` returns only bounded passages, no full `source_text`, and evidence-doc claims return null offsets. Until CC-10a, T2 is limited to `raw_text` Mode B; the passage-reconstruction fallback is not offset-faithful and must not be scored. (**CC-10b** — per-request `full_document_extraction` — is a separate later commit, needed only for long docs that truncate.)
 - **v2** stance/strength scoring — blocked on **MC-2** exposing per-span `evidential_relation` via an export (extension of the existing evidence-trace export).
 - Tool build itself (UI + scorer + store) is independent and can start now against captured fixtures; only **capturing** needs a dev ClaimCheck instance.
 

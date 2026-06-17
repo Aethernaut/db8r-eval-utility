@@ -1,12 +1,16 @@
 """EU-3 — Gold store (SQLite). Implements the design-note §4 schema.
 
-Record types (see ../db8r-mcts/docs/plans/2026-06-16-gold-eval-utility-design.md §4):
+Record types (see docs/gold-eval-design.md §4):
   - claim                (id, text, family, proof_standard, split)
-  - document_annotation  (document_id, fixture_id, claim_id, exhaustively_annotated, lost_evidence_flag)
-  - gold_span            (offsets, is_evidence, [stance, strength_ordinal — v2], label_source, ...)
+  - claim_document_link  (claim_id, document_id, origin=search|manual)  -- gates T1/T3 eligibility
+  - document_annotation  (document_id, fixture_id, exhaustively_annotated, lost_evidence_flag)  -- claim-independent
+  - gold_span            (span_id, document_id, offsets, text, is_claim_bearing, label_source, ...)  -- span-intrinsic
+  - claim_span_label     (claim_id, span_id, relevant_to_claim, [stance, strength_ordinal — v2])  -- claim-conditioned
   - retrieval_judgment   (claim_id, document_id, query, relevant, retrieval_rank)
   - dataset              (dataset_version, schema_version, annotation_guidelines_version)
 
+Two judgment frames: span-intrinsic (`is_claim_bearing`, reusable across claims) lives on
+`gold_span`; claim-conditioned (`relevant_to_claim`, stance, strength) lives on `claim_span_label`.
 Gold records reference fixtures by hash. This store is the tool's OWN store — never a
 production database.
 

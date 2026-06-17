@@ -37,3 +37,12 @@ class CaptureClient:
 
     def import_response(self, response_json_path: str) -> CaptureResult:  # Mode C
         raise NotImplementedError("EU-2: load + validate + freeze an existing /search response")
+
+    def capture_foraging(self, claim: str, mode: str = "pregame") -> list[CaptureResult]:
+        """Foraging-quality capture (design note §3.1): call db8r-mcts MC-5
+        `POST /api/v1/foraging-strategy {claim, mode}` to get the REAL generated portfolio
+        ({generator_version, queries:[...]}), then replay each query via self.search(...) so
+        each forage_query links to its ClaimCheck /search fixture. Persist forage_strategy /
+        forage_query records. Needs the db8r-mcts base URL (separate from ClaimCheck).
+        """
+        raise NotImplementedError("EU-2: MC-5 portfolio fetch + per-query replay + forage_* records")

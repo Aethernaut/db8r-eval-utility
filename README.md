@@ -3,7 +3,7 @@
 **Audience:** the coding agent building this tool. This is a **new, standalone project** at `~/projects/db8r-system/db8r-eval-utility/`.
 **It is not part of any production runtime.** It is an offline harness that measures how well the DB8R evidence pipeline **finds** germane source material and **extracts** evidence from it.
 
-**Canonical design** (read first): `../db8r-mcts/docs/plans/2026-06-16-gold-eval-utility-design.md` — this README is the implementation brief; that note is the authority on schema/metrics/decisions. Related context: `../db8r-claimcheck/EVIDENCE_PIPELINE_REFACTOR_CLAIMCHECK.md` and `../db8r-mcts/docs/plans/2026-06-16-evidence-pipeline-refactor-mcts.md`.
+**Canonical design** (read first): [`docs/gold-eval-design.md`](docs/gold-eval-design.md) — this README is the implementation brief; that note is the authority on schema/metrics/decisions. Related context (sibling repos): `../db8r-claimcheck/EVIDENCE_PIPELINE_REFACTOR_CLAIMCHECK.md` and `../db8r-mcts/docs/plans/2026-06-16-evidence-pipeline-refactor-mcts.md`.
 
 ---
 
@@ -31,6 +31,20 @@ The tool is **not** reliant on db8r debates. It drives ClaimCheck directly. Clai
 | **C — debate import** | load a previously captured `/search` response | distribution realism; bridge to v2 stance scoring |
 
 All three return the same `SearchJobResponse` shape, so a captured response from any mode is an interchangeable **fixture**.
+
+> **Capture mode ≠ evaluation goal.** A capture mode only determines how a document (and any initial claim link) enters the set. *What you can measure* on a fixture depends on whether it has a **`claim_document_link`** (see §6): a Mode-B claimless document is eligible only for the **T2 span-annotation** goal (extraction). To evaluate **retrieval (T1)** or **stance (T3)** on a directly-ingested document, **attach a claim** to it — the `(claim ↔ document)` association is first-class and independent of capture mode.
+
+### Foraging vs. retrieval (claim ≠ query)
+
+db8r-mcts turns one **claim** into a **foraging strategy** — a portfolio of queries (it issues one ClaimCheck `/search` per query, N per claim). So retrieval is two stages with two owners, measured separately:
+- **1a Foraging** (claim → queries, **db8r-mcts**) → **foraging recall** (the RL reward), tagged by `generator_version`.
+- **1b Retrieval** (query → docs, **ClaimCheck**) → ClaimCheck retrieval recall.
+
+**Foraging-quality capture** invokes db8r-mcts's *real* generator via a new endpoint **MC-5 `POST /api/v1/foraging-strategy {claim, mode}` → `{generator_version, queries:[{pool,query,strategy,priority,rank,providers}]}`** (read-only; pregame first), then replays each query through ClaimCheck `/search`. Schema: `forage_strategy` + `forage_query` (design note §4.7a/b); `retrieval_judgment` carries `forage_query_id`.
+
+### Annotation stability (enriching foraging forces no reannotation)
+
+Gold labels key to **`claim`, `document` (content-addressed by `source_text_hash`), and `span`** — never to queries, strategies, or `generator_version`. So a richer generator → **re-score only**; same docs reuse all labels, only newly-surfaced docs need (additive) annotation. The sole label-invalidator is a change to a document's `source_text` (a ClaimCheck *extraction* rebuild), handled by immutable fixtures + a verbatim-match span-migration pass.
 
 ### Verified ClaimCheck integration facts (2026-06-16 live build)
 - **Read offsets from the `claims[]` array.** In `SearchJobResponse`, `statement_offset`/`statement_length` are populated only on canonical `claims[]`. The `unified_results[]` and `evidence_documents[].extracted_claims[]` projections carry `extraction_fidelity`/`match_method`/`source_assertion_opinion` but return `statement_offset: null`. **Join spans by `claims[]` for offset-based matching.**
@@ -75,29 +89,42 @@ db8r-eval-utility/
 │   ├── store.py               # SQLite gold store (schema §4 of design note)
 │   ├── scorer.py              # v1 metrics (§5 of design note)
 │   ├── server.py              # FastAPI: serves annotation UI + persists gold records
-│   └── web/                   # single-page UI: source_text pane + reference pane + JS span selector
+│   └── web/                   # UI: three screens (T1 retrieval, T2 span+lost-evidence, T3 stance) over one store
 ├── fixtures/                  # immutable captured responses (gitignored if large; keep a small seed set)
 ├── gold/                      # SQLite db + exports
 └── tests/
 ```
 Store gold records in **SQLite** (queryable); store fixtures as **JSON files** named by hash. Both portable, no server dependency for annotation/scoring.
 
-## 6. Annotation UI spec
+## 6. Annotation tasks & UIs
 
-- **Primary pane:** render the fixture's `source_text` as a **single text node** (e.g. `<pre>`) so a browser text selection maps directly to raw character offsets (`selectionStart`/`selectionEnd` == `char_offset`/`char_offset+char_length`). Avoid any markup inside that node that would shift offsets.
-- **Pre-fill, don't author:** on load, highlight the fixture's `claims[]` spans as candidate gold spans. The human **corrects** — adjust a span, toggle `is_evidence`, add a missed span, delete a bad one. Every correction is both a gold label and a measured error of the current pipeline; record `label_source = pipeline_prefill_corrected | human_authored`.
-- **Per-span controls:** `is_evidence` (bool); `stance` (PRO/CON/NEUTRAL) and `strength_ordinal` (none/weak/moderate/strong) are **present but optional/unscored in v1** (v2 fields — collect if cheap, ignore in v1 scoring).
-- **Keyboard-driven** for speed (highlight → key for is_evidence, etc.).
-- **Read-only reference pane:** render the original document beside the text pane (iframe for the `source_url`; PDF.js for PDFs) so the human sees true layout/tables to judge meaning — **but highlights happen only in the `source_text` pane.** This recovers layout context without incurring layout↔offset mapping.
-- **Document-level flags:** `exhaustively_annotated` (bool — required for extraction *recall* to be defined on this doc) and `lost_evidence_flag` (bool + note — material evidence present in the original but absent from `source_text`; no offset). The latter is its own coverage metric (§7).
-- **Why `source_text` not layout:** the pipeline's offsets live in flat `source_text`; annotating in the rendered layout would require mapping bounding boxes back to char ranges (lossy). v1 measures the current pipeline, which can only extract from `source_text`; layout-space annotation is deferred to v2.
+**Three goals ⇒ three annotation screens over one shared store** (one tool, not three). A fixture's eligibility for a screen depends on whether it has a `claim_document_link` (§3), not on its capture mode. `gold_span` bridges T2→T3; `claim` joins T1/T3. Natural order on a fixture: **T1 → T2 → T3**.
+
+### T1 — Retrieval judgment (measures retrieval; needs a claim)
+- Show the claim + the ranked `retrieval_results[]` (title/snippet/url); mark each document relevant/not (binary or graded 0–3). List-based, fast; no `source_text` or spans.
+- Produces `retrieval_judgment` rows.
+
+### T2 — Span annotation + lost-evidence (measures extraction & text-loss; claim-independent)
+- **Primary pane:** render the fixture's `source_text` as a **single text node** (e.g. `<pre>`) so a browser selection maps directly to raw character offsets (`selectionStart`/`selectionEnd` == `char_offset`/`+length`). No markup inside that node.
+- **Pre-fill, don't author:** highlight the fixture's `claims[]` spans as candidates; the human **corrects** — adjust a span, toggle **`is_claim_bearing`** (well-formed, self-contained, verifiable statement), add a missed span, delete a bad one. Record `label_source = pipeline_prefill_corrected | human_authored`.
+- **Blind subset:** annotate a small subset with pre-fill **off** to calibrate anchoring bias on recall.
+- **Read-only reference pane:** original document beside the text pane (iframe for `source_url`; PDF.js for PDFs) for layout/table context — **highlights happen only in the `source_text` pane.**
+- **Document-level flags:** `exhaustively_annotated` (required for extraction recall to be defined) and `lost_evidence_flag` (+ note — material evidence in the original but absent from `source_text`).
+- Produces `gold_span` (`is_claim_bearing`) + `document_annotation`.
+- **Why `source_text` not layout:** offsets live in flat `source_text`; annotating in rendered layout needs lossy box→char mapping. v1 measures the current pipeline, which only extracts from `source_text`; layout-space annotation is v2.
+
+### T3 — Stance/strength (measures relation; needs a claim; v2 for scoring)
+- For a `(claim, span)` pair (spans come from T2 on a claim-linked doc), show the proposition + the span with surrounding context. Label **`relevant_to_claim`** (v1 claim-conditioned target), and — **v2** — `stance` (PRO/CON/NEUTRAL) + `strength_ordinal` (none/weak/moderate/strong) + abstain. One pair at a time, keyboard-driven.
+- Produces `claim_span_label` rows.
+
+**Two judgment frames (the key model):** `is_claim_bearing` is **span-intrinsic** (annotated once in T2, reusable across claims); `relevant_to_claim`/stance/strength are **claim-conditioned** (per `(claim, span)` in T3). This decomposes extraction precision into a "junk vs. usable" axis and an "on-topic vs. off-topic" axis (§7).
 
 ## 7. Scorer — v1 metrics (compute by joining gold ↔ fixture)
 
 **Stance/strength/`polarity_error_rate` are v2** (need db8r-mcts `evidential_relation`); v1 ignores the stance/strength fields.
 
-- **Retrieval** (needs `retrieval_judgment`): `recall@k`, `precision@k`, `coverage` (% claims with ≥1 relevant doc in top-k), **`primary-source coverage`** (% claims where a high-`source_reliability`/PDF doc appears in top-k — measures provider-expansion + CC-1a payoff). Report recall as *pooled* (relevant set = pooled judged docs).
-- **Extraction spans** (needs `gold_span.is_evidence` + offsets; doc must be `exhaustively_annotated` for recall): match a gold span to an extracted span iff same document and **char-range IoU ≥ τ** (default 0.5). `precision` = matched_extracted/total_extracted; `recall` = matched_gold/total_gold; `F1`. **Break out recall by document-length bucket, `content_type` (HTML vs PDF), and capture_mode** — this is the diagnostic that shows whether truncation (CC-3) and PDF ingestion (CC-1a) help.
+- **Retrieval — two metrics, two owners** (needs `retrieval_judgment` + foraging entities): **ClaimCheck retrieval recall@k/precision@k** (per `forage_query` — isolates provider/ranking) and **foraging recall** (per claim, per `generator_version` — the RL reward; denominator = gold germane pool built independently + Mode B, *never* the generator's own output). Plus `coverage` and **`primary-source coverage`** (% claims where a high-`source_reliability`/PDF doc appears in top-k — provider-expansion + CC-1a payoff).
+- **Extraction spans** (needs `gold_span` + offsets; doc must be `exhaustively_annotated` for recall): match a gold span to an extracted span iff same document and **char-range IoU ≥ τ** (default 0.5). Report **two precisions** (decompose the failure): **well-formedness precision** = extracted spans matching an `is_claim_bearing` gold span / total extracted (junk vs. usable); **targeting precision** = extracted spans matching a `relevant_to_claim` gold span / total extracted (on-topic vs. off-topic, per claim). **Germane recall** = matched (`is_claim_bearing ∧ relevant_to_claim`) gold spans / all such; plus `F1`. **Break out recall by document-length bucket, `content_type` (HTML vs PDF), and capture_mode** — shows whether truncation (CC-3) and PDF ingestion (CC-1a) help.
 - **Extraction fidelity** (needs fixture `extraction_fidelity`/`match_method`): match-method distribution; mean fidelity; **verbatim-locatability rate** (% extracted spans whose text is found in `source_text` — should be ≈100%; a drop signals a verbatim-guard regression).
 - **Text-extraction coverage** (needs `lost_evidence_flag`): **lost-evidence rate** = % docs where material evidence was absent from `source_text`. Kept **separate** from extractor recall so "extractor missed it" ≠ "text layer dropped it before extraction."
 - **Partial-extraction awareness:** if a fixture is flagged partial (CC-3a), the scorer must **exclude it from extraction-recall denominators** (or report separately) — a truncated document is not a fair recall target.
@@ -113,11 +140,12 @@ Reuse the existing **72-claim pre-RL stress corpus** (`../db8r-mcts/docs/plans/2
 | ID | Deliverable |
 |---|---|
 | **EU-1** | Scaffold: repo, `pyproject`, `config.py` (ClaimCheck base URL, τ, paths), CI (ruff + pytest). |
-| **EU-2** | Capture client: Modes A/B/C → frozen hashed fixtures; record partial-extraction status + source provenance. |
+| **EU-2** | Capture client: Modes A/B/C → frozen hashed fixtures; record partial-extraction status + source provenance. Documents are **content-addressed by `source_text_hash`** (so labels survive foraging enrichment). |
+| **EU-2f** | Foraging capture: call db8r-mcts **MC-5** `/api/v1/foraging-strategy` → replay each query via Mode A → persist `forage_strategy`/`forage_query` (carry `generator_version`). *Depends on MC-5.* |
 | **EU-3** | Gold store (SQLite) implementing the design-note §4 schema; fixture loader with `source_text_hash` integrity check. |
 | **EU-4** | Annotation UI (§6): `source_text` pane + reference pane + JS span selector + pre-fill + keyboard + doc-level flags. |
-| **EU-5** | Scorer (§7 v1 metrics) → JSON + HTML report, sliceable by family/content_type. |
-| **EU-6** | Seed the 72-claim set; capture an initial hard-case batch (Mode A CON/PDF queries + Mode B known PDFs); produce a first baseline report. |
+| **EU-5** | Scorer (§7 v1 metrics) → JSON + HTML report, sliceable by family/content_type; incl. the two retrieval metrics (ClaimCheck recall per query + foraging recall per `generator_version`). |
+| **EU-6** | Seed the 72-claim set; capture an initial hard-case batch (Mode A CON/PDF queries + Mode B known PDFs + EU-2f foraging via MC-5); build the gold germane pool per claim; produce a first baseline report. |
 | **v2 (later)** | Import db8r-mcts `evidential_relation` exports → stance/strength scoring + `polarity_error_rate`; pairwise strength; layout-space annotation. |
 
 ## 10. Out of scope for v1 (deferred, with triggers)

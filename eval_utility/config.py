@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     claimcheck_base_url: str = "http://127.0.0.1:8001"
     claimcheck_timeout_seconds: float = 120.0
 
+    # db8r-mcts client — foraging-strategy capture only (MC-5 /api/v1/foraging-strategy)
+    db8r_mcts_base_url: str = "http://127.0.0.1:8000"
+    db8r_mcts_timeout_seconds: float = 60.0
+
     # Storage (own store — never a production DB)
     fixtures_dir: Path = ROOT_DIR / "fixtures"
     gold_db_path: Path = ROOT_DIR / "gold" / "gold.db"

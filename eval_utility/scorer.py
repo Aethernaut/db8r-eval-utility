@@ -1,8 +1,11 @@
 """EU-5 — Scorer. Computes v1 metrics by joining gold records to fixtures (offline).
 
-v1 metrics (README §7; design-note §5). Stance/strength/polarity_error_rate are v2.
+v1 metrics (README §7; docs/gold-eval-design.md §5). Stance/strength/polarity_error_rate are v2.
   - Retrieval:   recall@k, precision@k, coverage, primary-source coverage
-  - Extraction:  precision/recall/F1 with char-range IoU >= tau (default 0.5),
+  - Extraction:  TWO precisions (decompose the failure) + germane recall, char-range IoU >= tau (0.5):
+                   * well-formedness precision = extracted matching an is_claim_bearing gold span / total extracted
+                   * targeting precision (per claim) = extracted matching a relevant_to_claim gold span / total extracted
+                   * germane recall (per claim) = matched (is_claim_bearing AND relevant_to_claim) / all such
                  broken out by document-length bucket, content_type, capture_mode
   - Fidelity:    match_method distribution, mean extraction_fidelity, verbatim-locatability rate
   - Coverage:    lost-evidence rate (separate from extractor recall)

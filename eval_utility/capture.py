@@ -18,11 +18,15 @@ Key invariants:
   - Fixtures are immutable once written
   - Gold labels key only to claim/content-addressed-document/span
 
-ClaimCheck requirements:
-  - For Mode A to capture source_text (required for span annotation), ClaimCheck must be
-    started with FULL_DOCUMENT_EXTRACTION_ENABLED=true. Mode A requests include_evidence_documents=true
-    to opt into this feature.
-  - Mode B (/extract) always returns evidence_documents regardless of this setting.
+ClaimCheck requirements (verified live 2026-06-17, CC-10a/10b landed):
+  - Mode A `/search` is ASYNC: POST returns a pending job; the **poll GET must pass
+    `?include_evidence_documents=true&include_source_text=true`** or the response has
+    `evidence_documents: null` (the earlier "legacy_claim_fragment" was a cache effect, not a mode).
+  - CC-10a: evidence documents carry full `source_text` + per-claim offsets when
+    `include_source_text=true`. We read `source_text` directly (no lossy passage reconstruction).
+  - CC-10b: pass `full_document_extraction=true` per request to avoid the server's char-cap
+    truncation — no need to flip the shared `FULL_DOCUMENT_EXTRACTION_ENABLED` server flag.
+  - Mode B (/extract) is synchronous and honors the same flags in its POST body.
 """
 
 from __future__ import annotations
@@ -62,7 +66,7 @@ class CapturedSpan:
 
     claim_id: str
     document_id: str
-    text: str
+    text: str  # claim.statement — may be normalized/repaired; use verbatim_span for offset scoring
     char_offset: int  # statement_offset from claims[]
     char_length: int  # statement_length from claims[]
     extraction_fidelity: float | None = None
@@ -70,6 +74,8 @@ class CapturedSpan:
     source_assertion_opinion: dict[str, Any] | None = None
     claimset_orientation: str | None = None
     relevance_score: float | None = None
+    # CC-10a: exact source span (== source_text[offset:offset+length]); preferred for IoU/slicing.
+    verbatim_span: str | None = None
 
 
 @dataclass(frozen=True)
@@ -301,9 +307,15 @@ class CaptureClient:
             if not doc_id:
                 continue
 
-            # Get source_text: use raw_text input if provided and this is the only doc
+            # Source text precedence:
+            #   1. raw_text input (Mode B raw_text — caller supplied the exact text)
+            #   2. full `source_text` from the response (CC-10a — exact stored SourceDocument.text)
+            #   3. lossy passage reconstruction (last resort; NOT offset-faithful, pre-CC-10a only)
+            full_source_text = evidence_doc.get("source_text")
             if raw_text_input and len(evidence_docs) == 1:
                 text = raw_text_input
+            elif isinstance(full_source_text, str) and full_source_text:
+                text = full_source_text
             else:
                 text = self._reconstruct_source_text(evidence_doc)
 
@@ -346,6 +358,17 @@ class CaptureClient:
         spans: list[CapturedSpan] = []
         claims = response.get("claims", [])
 
+        # CC-10a: evidence-document `extracted_claims` carry the exact `verbatim_span`
+        # aligned to the offsets (top-level claim.statement may be normalized/repaired).
+        # Map by claim_id so the span carries the offset-faithful text for scoring.
+        verbatim_by_id: dict[str, str] = {}
+        for ed in response.get("evidence_documents") or []:
+            for ec in ed.get("extracted_claims") or []:
+                cid = ec.get("claim_id")
+                vs = ec.get("verbatim_span")
+                if cid and isinstance(vs, str) and vs:
+                    verbatim_by_id[cid] = vs
+
         for claim in claims:
             # Only include claims with valid offsets
             offset = claim.get("statement_offset")
@@ -366,6 +389,7 @@ class CaptureClient:
                     source_assertion_opinion=claim.get("source_assertion_opinion"),
                     claimset_orientation=claim.get("claimset_orientation"),
                     relevance_score=claim.get("relevance_score"),
+                    verbatim_span=verbatim_by_id.get(claim.get("claim_id", "")),
                 )
             )
 
@@ -403,7 +427,12 @@ class CaptureClient:
     ) -> dict[str, Any]:
         """Poll a search job until completion or failure."""
         for _ in range(max_polls):
-            resp = client.get(f"/api/v1/search/jobs/{job_id}")
+            # The job-detail endpoint defaults these to false; without them the polled
+            # response has evidence_documents: null (this was the Mode A capture bug).
+            resp = client.get(
+                f"/api/v1/search/jobs/{job_id}",
+                params={"include_evidence_documents": "true", "include_source_text": "true"},
+            )
             resp.raise_for_status()
             data = resp.json()
 
@@ -426,16 +455,19 @@ class CaptureClient:
     ) -> CaptureResult:
         """Mode A: Unilateral search via POST /api/v1/search.
 
-        Polls until completion, then freezes response as a fixture.
+        Polls until completion (with include_evidence_documents + include_source_text),
+        then freezes the response as a fixture.
 
-        Note: Requests include_evidence_documents=True to capture source_text for
-        span annotation. Requires ClaimCheck server to have FULL_DOCUMENT_EXTRACTION_ENABLED=true.
+        Requests `full_document_extraction` per-call (CC-10b) so captures aren't truncated;
+        the poll then retrieves full `source_text` + offsets (CC-10a). No dependency on the
+        shared server's FULL_DOCUMENT_EXTRACTION_ENABLED flag.
         """
         with self._http_client(self.settings.claimcheck_base_url, self.settings.claimcheck_timeout_seconds) as client:
-            # Submit search with evidence document extraction enabled
             payload: dict[str, Any] = {
                 "query": query,
-                "include_evidence_documents": True,  # Required for source_text capture
+                "include_evidence_documents": True,
+                "include_source_text": True,  # CC-10a
+                "full_document_extraction": self.settings.capture_full_document_extraction,  # CC-10b
             }
             if providers:
                 payload["providers"] = providers
@@ -474,7 +506,11 @@ class CaptureClient:
             raise ValueError("Provide exactly one of 'url' or 'raw_text'")
 
         with self._http_client(self.settings.claimcheck_base_url, self.settings.claimcheck_timeout_seconds) as client:
-            payload: dict[str, Any] = {}
+            payload: dict[str, Any] = {
+                "include_evidence_documents": True,
+                "include_source_text": True,  # CC-10a — full source_text on the (synchronous) response
+                "full_document_extraction": self.settings.capture_full_document_extraction,  # CC-10b
+            }
             if url:
                 payload["url"] = url
             if raw_text:

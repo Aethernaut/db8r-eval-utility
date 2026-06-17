@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     fixtures_dir: Path = ROOT_DIR / "fixtures"
     gold_db_path: Path = ROOT_DIR / "gold" / "gold.db"
 
+    # Capture options
+    # Request per-request full-document extraction (CC-10b) so captures aren't truncated
+    # at the server's default char cap. Opt-in per call; does not touch the shared server flag.
+    capture_full_document_extraction: bool = True
+
     # Scoring
     span_match_iou_threshold: float = 0.5  # τ for gold↔extracted span matching
     retrieval_top_k: int = 10

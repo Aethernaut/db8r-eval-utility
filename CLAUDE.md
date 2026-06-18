@@ -77,8 +77,9 @@ Foraging capture uses MC-5 `POST /api/v1/foraging-strategy` (port 8000).
 - `eval_utility/capture.py` — Mode A/B/C capture + foraging via MC-5 (EU-2 ✓)
 - `eval_utility/fixtures.py` — Fixture loading with hash/verbatim verification (EU-3 ✓)
 - `eval_utility/store.py` — SQLite gold store with 9 record types (EU-3 ✓)
-- `eval_utility/scorer.py` — v1 metrics computation; `char_range_iou` implemented (TODO: EU-5)
-- `eval_utility/server.py` — FastAPI annotation UI (TODO: EU-4)
+- `eval_utility/scorer.py` — v1 metrics computation (EU-5 ✓): retrieval/extraction/fidelity/coverage metrics + JSON/HTML reports
+- `eval_utility/server.py` — FastAPI annotation API (EU-4 ✓): REST endpoints for fixtures, claims, spans, labels, judgments
+- `eval_utility/api/` — API routers and schemas (EU-4 ✓)
 
 ## External Service Contracts
 
@@ -94,9 +95,42 @@ Foraging capture uses MC-5 `POST /api/v1/foraging-strategy` (port 8000).
 
 ## Scorer Details
 
+### v1 Metrics (docs/gold-eval-design.md §5)
+
+**Retrieval:**
+- `recall@k`, `precision@k` per query/claim
+- `claim_coverage` — % claims with ≥1 germane doc
+- `primary_source_coverage` — % claims with high-reliability doc in top-k
+
+**Extraction:**
+- `well_formedness_precision` — extracted matching `is_claim_bearing` gold span / total extracted
+- `targeting_precision` — extracted matching `relevant_to_claim` gold span / total extracted (per claim)
+- `germane_recall` — matched (`is_claim_bearing` ∧ `relevant_to_claim`) / all such gold spans
+- `well_formed_recall` — matched `is_claim_bearing` / all `is_claim_bearing` gold spans
+- `f1_germane` — F1 on germane set
+- Breakouts by content_type, document length bucket, capture_mode
+
+**Fidelity:**
+- `match_method_distribution` — exact/normalized/fuzzy proportions
+- `mean_extraction_fidelity`
+- `verbatim_locatability_rate` — % spans found verbatim in source_text
+
+**Coverage:**
+- `lost_evidence_rate` — % docs with `lost_evidence_flag=true`
+
+### Key Rules
 - **Span matching:** `char_range_iou(a_offset, a_len, b_offset, b_len)` — match iff IoU ≥ τ (default 0.5)
 - **Partial extraction:** Fixtures with `extraction_status.partial_extraction=true` excluded from extraction-recall denominators
 - **Blind annotation subset:** Small subset without pre-fill to calibrate anchoring bias
+
+### Usage
+```python
+from eval_utility.scorer import Scorer
+scorer = Scorer()
+report = scorer.score_all()
+scorer.export_json(report, Path("report.json"))
+scorer.export_html(report, Path("report.html"))
+```
 
 ## Implementation Status
 
@@ -105,6 +139,6 @@ Foraging capture uses MC-5 `POST /api/v1/foraging-strategy` (port 8000).
 | EU-1: Scaffold | ✓ Done |
 | EU-2: Capture client (Mode A/B/C + foraging) | ✓ Done |
 | EU-3: SQLite store + fixture loader | ✓ Done |
-| EU-4: Annotation UI | TODO |
-| EU-5: Scorer (v1 metrics) | TODO (IoU done) |
+| EU-4: Annotation API | ✓ Done |
+| EU-5: Scorer (v1 metrics) | ✓ Done |
 | EU-6: Seed 72-claim corpus | TODO |

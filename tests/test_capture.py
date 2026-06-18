@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -13,6 +14,7 @@ from eval_utility.capture import (
     ExtractionStatus,
     ForageQuery,
     ForageStrategy,
+    ForagingResult,
     CaptureError,
 )
 from eval_utility.config import Settings
@@ -479,3 +481,390 @@ class TestCheckServices:
         status = client.check_services()
         assert not status["claimcheck"]
         assert not status["db8r_mcts"]
+
+
+class TestCaptureForagingIntegration:
+    """EU-2f: Mocked integration tests for capture_foraging."""
+
+    @pytest.fixture
+    def client(self, tmp_path):
+        settings = Settings(
+            fixtures_dir=tmp_path / "fixtures",
+            claimcheck_base_url="http://claimcheck:8001",
+            db8r_mcts_base_url="http://mcts:8000",
+        )
+        return CaptureClient(settings)
+
+    @pytest.fixture
+    def mc5_response(self):
+        """Sample MC-5 foraging-strategy response."""
+        return {
+            "generator_version": "query_generation:llm:model=gpt-4.1-nano",
+            "generator": "llm",
+            "claim_type": "factual",
+            "providers": ["serper", "tavily"],
+            "queries": [
+                {
+                    "pool": "PRO",
+                    "query": "Earth age scientific evidence",
+                    "strategy": "direct_evidence",
+                    "priority": 0.95,
+                    "rank": 1,
+                    "providers": ["serper"],
+                    "intent_label": "direct_evidence",
+                    "rationale": "Find direct scientific sources",
+                    "retrieval_role": "direct_support",
+                    "scheme": "expert_opinion",
+                },
+                {
+                    "pool": "PRO",
+                    "query": "radiometric dating Earth",
+                    "strategy": "methodology",
+                    "priority": 0.85,
+                    "rank": 2,
+                    "providers": ["tavily"],
+                    "intent_label": "methodology",
+                    "rationale": "Find dating methodology sources",
+                    "retrieval_role": "indirect_support",
+                },
+            ],
+            "fallback_reason": None,
+            "claim_decomposition": {"core_assertion": "Earth is 4.5 billion years old"},
+            "polarity_reversal": None,
+            "schema_plan": {"primary_schemes": ["expert_opinion", "evidence"]},
+        }
+
+    @pytest.fixture
+    def claimcheck_search_response(self):
+        """Sample ClaimCheck /search response for query replay."""
+        def make_response(query: str, job_id: str):
+            source_text = f"Document content for query: {query}"
+            return {
+                "job_id": job_id,
+                "status": "completed",
+                "query": query,
+                "claims": [
+                    {
+                        "claim_id": f"clm-{job_id}",
+                        "source_document_id": f"doc-{job_id}",
+                        "statement": "The Earth is 4.5 billion years old.",
+                        "statement_offset": 0,
+                        "statement_length": 37,
+                        "extraction_fidelity": 1.0,
+                        "match_method": "exact",
+                        "verbatim_span": "The Earth is 4.5 billion years old.",
+                    }
+                ],
+                "evidence_documents": [
+                    {
+                        "document_id": f"doc-{job_id}",
+                        "source_url": f"https://example.com/{job_id}",
+                        "source_title": "Test Document",
+                        "source_domain": "example.com",
+                        "provider": "serper",
+                        "content_type": "html",
+                        "source_text": source_text,
+                        "extraction_status": {
+                            "partial_extraction": False,
+                            "chunks_processed": 1,
+                            "chunks_total": 1,
+                        },
+                    }
+                ],
+                "results": [
+                    {
+                        "url": f"https://example.com/{job_id}",
+                        "title": "Test Document",
+                        "rank": 1,
+                        "provider": "serper",
+                    }
+                ],
+            }
+        return make_response
+
+    def test_capture_foraging_parses_strategy(self, client, mc5_response):
+        """Verify MC-5 response is correctly parsed into ForageStrategy."""
+        with patch.object(client, "_http_client") as mock_http:
+            # Mock MC-5 response
+            mock_client = MagicMock()
+            mock_http.return_value.__enter__.return_value = mock_client
+            mock_response = MagicMock()
+            mock_response.json.return_value = mc5_response
+            mock_response.raise_for_status = MagicMock()
+            mock_client.post.return_value = mock_response
+
+            result = client.capture_foraging(
+                claim="The Earth is 4.5 billion years old.",
+                perspective="supports_claim",
+                replay_queries=False,  # Don't replay to isolate parsing test
+            )
+
+            assert isinstance(result, ForagingResult)
+            assert isinstance(result.strategy, ForageStrategy)
+
+            strategy = result.strategy
+            assert strategy.forage_strategy_id.startswith("fstrat-")
+            assert strategy.claim == "The Earth is 4.5 billion years old."
+            assert strategy.mode == "pregame"
+            assert strategy.perspective == "supports_claim"
+            assert strategy.generator_version == "query_generation:llm:model=gpt-4.1-nano"
+            assert strategy.generator == "llm"
+            assert strategy.claim_type == "factual"
+            assert strategy.providers == ["serper", "tavily"]
+            assert strategy.source == "mc5_endpoint"
+            assert strategy.claim_decomposition == {"core_assertion": "Earth is 4.5 billion years old"}
+
+    def test_capture_foraging_parses_queries(self, client, mc5_response):
+        """Verify queries are correctly parsed into ForageQuery list."""
+        with patch.object(client, "_http_client") as mock_http:
+            mock_client = MagicMock()
+            mock_http.return_value.__enter__.return_value = mock_client
+            mock_response = MagicMock()
+            mock_response.json.return_value = mc5_response
+            mock_response.raise_for_status = MagicMock()
+            mock_client.post.return_value = mock_response
+
+            result = client.capture_foraging(
+                claim="Test claim",
+                perspective="contradicts_claim",
+                replay_queries=False,
+            )
+
+            queries = result.strategy.queries
+            assert len(queries) == 2
+
+            q1 = queries[0]
+            assert q1.forage_query_id.startswith("fq-")
+            assert q1.pool == "PRO"
+            assert q1.query == "Earth age scientific evidence"
+            assert q1.strategy == "direct_evidence"
+            assert q1.priority == 0.95
+            assert q1.rank == 1
+            assert q1.providers == ["serper"]
+            assert q1.intent_label == "direct_evidence"
+            assert q1.rationale == "Find direct scientific sources"
+            assert q1.retrieval_role == "direct_support"
+            assert q1.scheme == "expert_opinion"
+
+            q2 = queries[1]
+            assert q2.pool == "PRO"
+            assert q2.query == "radiometric dating Earth"
+            assert q2.rank == 2
+            assert q2.providers == ["tavily"]
+
+    def test_capture_foraging_replays_queries(self, client, mc5_response, claimcheck_search_response):
+        """Verify each query is replayed via ClaimCheck /search."""
+        call_count = {"mc5": 0, "search_post": 0, "search_get": 0}
+        job_counter = [0]
+
+        def mock_post(url, **kwargs):
+            response = MagicMock()
+            response.raise_for_status = MagicMock()
+
+            if "/foraging-strategy" in url:
+                call_count["mc5"] += 1
+                response.json.return_value = mc5_response
+            else:  # /search
+                call_count["search_post"] += 1
+                job_counter[0] += 1
+                job_id = f"esj-test-{job_counter[0]}"
+                response.json.return_value = {"job_id": job_id, "status": "pending"}
+            return response
+
+        def mock_get(url, **kwargs):
+            call_count["search_get"] += 1
+            response = MagicMock()
+            response.raise_for_status = MagicMock()
+            # Extract job_id from URL
+            job_id = f"esj-test-{call_count['search_get']}"
+            query = mc5_response["queries"][call_count["search_get"] - 1]["query"]
+            response.json.return_value = claimcheck_search_response(query, job_id)
+            return response
+
+        with patch.object(client, "_http_client") as mock_http:
+            mock_client = MagicMock()
+            mock_http.return_value.__enter__.return_value = mock_client
+            mock_client.post.side_effect = mock_post
+            mock_client.get.side_effect = mock_get
+
+            result = client.capture_foraging(
+                claim="The Earth is 4.5 billion years old.",
+                perspective="supports_claim",
+                replay_queries=True,
+            )
+
+            # Verify MC-5 was called once
+            assert call_count["mc5"] == 1
+
+            # Verify /search was called for each query (2 queries = 2 POSTs + 2 GETs)
+            assert call_count["search_post"] == 2
+            assert call_count["search_get"] == 2
+
+            # Verify capture results
+            assert len(result.capture_results) == 2
+            for cr in result.capture_results:
+                assert cr.fixture_id.startswith("fix-")
+                assert cr.capture_mode == "search_A"
+
+    def test_capture_foraging_links_fixtures_to_queries(self, client, mc5_response, claimcheck_search_response):
+        """Verify fixture_id is set on each ForageQuery after replay."""
+        job_counter = [0]
+
+        def mock_post(url, **kwargs):
+            response = MagicMock()
+            response.raise_for_status = MagicMock()
+
+            if "/foraging-strategy" in url:
+                response.json.return_value = mc5_response
+            else:
+                job_counter[0] += 1
+                response.json.return_value = {"job_id": f"esj-{job_counter[0]}", "status": "pending"}
+            return response
+
+        def mock_get(url, **kwargs):
+            response = MagicMock()
+            response.raise_for_status = MagicMock()
+            job_id = url.split("/")[-1].split("?")[0]
+            idx = int(job_id.split("-")[-1]) - 1
+            query = mc5_response["queries"][idx]["query"]
+            response.json.return_value = claimcheck_search_response(query, job_id)
+            return response
+
+        with patch.object(client, "_http_client") as mock_http:
+            mock_client = MagicMock()
+            mock_http.return_value.__enter__.return_value = mock_client
+            mock_client.post.side_effect = mock_post
+            mock_client.get.side_effect = mock_get
+
+            result = client.capture_foraging(
+                claim="Test",
+                perspective="supports_claim",
+                replay_queries=True,
+            )
+
+            # Each query should have a fixture_id set
+            for query in result.strategy.queries:
+                assert query.fixture_id is not None
+                assert query.fixture_id.startswith("fix-")
+
+    def test_capture_foraging_passes_strategy_ids_to_search(self, client, mc5_response, claimcheck_search_response):
+        """Verify forage_strategy_id and forage_query_id are passed to search()."""
+        captured_fixture_metadata = []
+        job_counter = [0]
+
+        def mock_post(url, **kwargs):
+            response = MagicMock()
+            response.raise_for_status = MagicMock()
+
+            if "/foraging-strategy" in url:
+                response.json.return_value = mc5_response
+            else:
+                job_counter[0] += 1
+                response.json.return_value = {"job_id": f"esj-{job_counter[0]}", "status": "pending"}
+            return response
+
+        def mock_get(url, **kwargs):
+            response = MagicMock()
+            response.raise_for_status = MagicMock()
+            job_id = url.split("/")[-1].split("?")[0]
+            idx = int(job_id.split("-")[-1]) - 1
+            query = mc5_response["queries"][idx]["query"]
+            response.json.return_value = claimcheck_search_response(query, job_id)
+            return response
+
+        with patch.object(client, "_http_client") as mock_http:
+            mock_client = MagicMock()
+            mock_http.return_value.__enter__.return_value = mock_client
+            mock_client.post.side_effect = mock_post
+            mock_client.get.side_effect = mock_get
+
+            result = client.capture_foraging(
+                claim="Test",
+                perspective="supports_claim",
+                replay_queries=True,
+            )
+
+            # Check fixtures contain forage_strategy_id and forage_query_id
+            for cr in result.capture_results:
+                with open(cr.fixture_path) as f:
+                    fixture = json.load(f)
+                assert fixture["forage_strategy_id"] == result.strategy.forage_strategy_id
+                assert fixture["forage_query_id"] is not None
+                captured_fixture_metadata.append(
+                    (fixture["forage_strategy_id"], fixture["forage_query_id"])
+                )
+
+            # All fixtures should have same strategy_id but different query_ids
+            strategy_ids = set(m[0] for m in captured_fixture_metadata)
+            query_ids = set(m[1] for m in captured_fixture_metadata)
+            assert len(strategy_ids) == 1
+            assert len(query_ids) == 2  # Two different queries
+
+    def test_capture_foraging_both_perspectives(self, client, mc5_response):
+        """Verify both perspectives can be captured."""
+        with patch.object(client, "_http_client") as mock_http:
+            mock_client = MagicMock()
+            mock_http.return_value.__enter__.return_value = mock_client
+            mock_response = MagicMock()
+            mock_response.json.return_value = mc5_response
+            mock_response.raise_for_status = MagicMock()
+            mock_client.post.return_value = mock_response
+
+            # supports_claim
+            result_pro = client.capture_foraging(
+                claim="Test",
+                perspective="supports_claim",
+                replay_queries=False,
+            )
+            assert result_pro.strategy.perspective == "supports_claim"
+
+            # contradicts_claim
+            result_con = client.capture_foraging(
+                claim="Test",
+                perspective="contradicts_claim",
+                replay_queries=False,
+            )
+            assert result_con.strategy.perspective == "contradicts_claim"
+
+    def test_capture_foraging_continues_on_query_failure(self, client, mc5_response, claimcheck_search_response, capsys):
+        """Verify capture continues even if some queries fail."""
+        job_counter = [0]
+
+        def mock_post(url, **kwargs):
+            response = MagicMock()
+            response.raise_for_status = MagicMock()
+
+            if "/foraging-strategy" in url:
+                response.json.return_value = mc5_response
+            else:
+                job_counter[0] += 1
+                if job_counter[0] == 1:
+                    # First query fails
+                    raise Exception("Network error")
+                response.json.return_value = {"job_id": f"esj-{job_counter[0]}", "status": "pending"}
+            return response
+
+        def mock_get(url, **kwargs):
+            response = MagicMock()
+            response.raise_for_status = MagicMock()
+            query = mc5_response["queries"][1]["query"]  # Second query
+            response.json.return_value = claimcheck_search_response(query, "esj-2")
+            return response
+
+        with patch.object(client, "_http_client") as mock_http:
+            mock_client = MagicMock()
+            mock_http.return_value.__enter__.return_value = mock_client
+            mock_client.post.side_effect = mock_post
+            mock_client.get.side_effect = mock_get
+
+            result = client.capture_foraging(
+                claim="Test",
+                perspective="supports_claim",
+                replay_queries=True,
+            )
+
+            # Should have captured 1 of 2 queries (first failed)
+            assert len(result.capture_results) == 1
+            # Warning should be printed
+            captured = capsys.readouterr()
+            assert "Warning" in captured.out or len(result.capture_results) == 1

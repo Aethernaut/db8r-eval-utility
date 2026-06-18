@@ -80,6 +80,7 @@ Foraging capture uses MC-5 `POST /api/v1/foraging-strategy` (port 8000).
 - `eval_utility/scorer.py` — v1 metrics computation (EU-5 ✓): retrieval/extraction/fidelity/coverage metrics + JSON/HTML reports
 - `eval_utility/server.py` — FastAPI annotation API (EU-4 ✓): REST endpoints for fixtures, claims, spans, labels, judgments
 - `eval_utility/api/` — API routers and schemas (EU-4 ✓)
+- `eval_utility/corpus.py` — 72-claim pre-RL stress corpus (EU-6 ✓): seed claims with family balance and split assignment
 
 ## External Service Contracts
 
@@ -141,4 +142,4 @@ scorer.export_html(report, Path("report.html"))
 | EU-3: SQLite store + fixture loader | ✓ Done |
 | EU-4: Annotation API | ✓ Done |
 | EU-5: Scorer (v1 metrics) | ✓ Done |
-| EU-6: Seed 72-claim corpus | TODO |
+| EU-6: Seed 72-claim corpus | ✓ Done |

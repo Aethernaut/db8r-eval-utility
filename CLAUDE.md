@@ -75,8 +75,8 @@ Foraging capture uses MC-5 `POST /api/v1/foraging-strategy` (port 8000).
 
 - `eval_utility/config.py` — Settings (ClaimCheck URL, τ=0.5, paths). Env prefix `EVAL_`.
 - `eval_utility/capture.py` — Mode A/B/C capture + foraging via MC-5 (EU-2 ✓)
-- `eval_utility/fixtures.py` — Fixture loading, `source_text_hash` integrity (TODO: EU-3)
-- `eval_utility/store.py` — SQLite gold store with 8 record types (TODO: EU-3)
+- `eval_utility/fixtures.py` — Fixture loading with hash/verbatim verification (EU-3 ✓)
+- `eval_utility/store.py` — SQLite gold store with 9 record types (EU-3 ✓)
 - `eval_utility/scorer.py` — v1 metrics computation; `char_range_iou` implemented (TODO: EU-5)
 - `eval_utility/server.py` — FastAPI annotation UI (TODO: EU-4)
 
@@ -104,7 +104,7 @@ Foraging capture uses MC-5 `POST /api/v1/foraging-strategy` (port 8000).
 |-----------|--------|
 | EU-1: Scaffold | ✓ Done |
 | EU-2: Capture client (Mode A/B/C + foraging) | ✓ Done |
-| EU-3: SQLite store + fixture loader | TODO |
+| EU-3: SQLite store + fixture loader | ✓ Done |
 | EU-4: Annotation UI | TODO |
 | EU-5: Scorer (v1 metrics) | TODO (IoU done) |
 | EU-6: Seed 72-claim corpus | TODO |

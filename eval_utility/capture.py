@@ -195,6 +195,7 @@ class ForageStrategy:
     providers: list[str]
     queries: list[ForageQuery]
     captured_at: str
+    source: str = "mc5_endpoint"  # mc5_endpoint | debate_trace (§4.7a)
     # Extra response fields
     fallback_reason: str | None = None
     claim_decomposition: dict[str, Any] | None = None

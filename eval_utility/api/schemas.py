@@ -476,3 +476,4 @@ class DatasetUpdate(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     version: str
+    database_connected: bool = True

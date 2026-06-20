@@ -131,12 +131,9 @@ def delete_claim(
     if claim is None:
         raise HTTPException(status_code=404, detail=f"Claim {claim_id} not found")
 
-    with store._connect() as conn:
-        # Delete related records first (cascade)
-        conn.execute("DELETE FROM claim_span_label WHERE claim_id = ?", (claim_id,))
-        conn.execute("DELETE FROM retrieval_judgment WHERE claim_id = ?", (claim_id,))
-        conn.execute("DELETE FROM claim_document_link WHERE claim_id = ?", (claim_id,))
-        conn.execute("DELETE FROM claim WHERE claim_id = ?", (claim_id,))
+    deleted = store.delete_claim(claim_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Claim {claim_id} not found")
 
     return Response(status_code=204)
 

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from sqlalchemy import func, select
 
+from ..database import session_scope
+from ..models import ClaimSpanLabelModel
 from ..store import ClaimSpanLabel, GoldStore
 from .dependencies import get_store
 from .schemas import (
@@ -33,6 +36,21 @@ def _label_to_response(label: ClaimSpanLabel) -> ClaimSpanLabelResponse:
     )
 
 
+def _model_to_label(m: ClaimSpanLabelModel) -> ClaimSpanLabel:
+    """Convert SQLAlchemy model to dataclass."""
+    return ClaimSpanLabel(
+        claim_id=m.claim_id,
+        span_id=m.span_id,
+        relevant_to_claim=m.relevant_to_claim,
+        stance=m.stance,
+        strength_ordinal=m.strength_ordinal,
+        annotator_id=m.annotator_id,
+        notes=m.notes,
+        created_at=m.created_at.isoformat() if m.created_at else "",
+        updated_at=m.updated_at.isoformat() if m.updated_at else "",
+    )
+
+
 @router.get("", response_model=ClaimSpanLabelListResponse)
 def list_labels(
     claim_id: str | None = Query(None),
@@ -42,37 +60,26 @@ def list_labels(
     store: GoldStore = Depends(get_store),
 ) -> ClaimSpanLabelListResponse:
     """List claim-span labels (filter by claim_id, span_id)."""
-    with store._connect() as conn:
-        query = "SELECT * FROM claim_span_label WHERE 1=1"
-        count_query = "SELECT COUNT(*) FROM claim_span_label WHERE 1=1"
-        params: list = []
-        count_params: list = []
+    with session_scope() as session:
+        stmt = select(ClaimSpanLabelModel)
+        count_stmt = select(func.count()).select_from(ClaimSpanLabelModel)
 
         if claim_id is not None:
-            query += " AND claim_id = ?"
-            count_query += " AND claim_id = ?"
-            params.append(claim_id)
-            count_params.append(claim_id)
+            stmt = stmt.where(ClaimSpanLabelModel.claim_id == claim_id)
+            count_stmt = count_stmt.where(ClaimSpanLabelModel.claim_id == claim_id)
 
         if span_id is not None:
-            query += " AND span_id = ?"
-            count_query += " AND span_id = ?"
-            params.append(span_id)
-            count_params.append(span_id)
+            stmt = stmt.where(ClaimSpanLabelModel.span_id == span_id)
+            count_stmt = count_stmt.where(ClaimSpanLabelModel.span_id == span_id)
 
-        query += " ORDER BY claim_id, span_id LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
+        stmt = stmt.order_by(ClaimSpanLabelModel.claim_id, ClaimSpanLabelModel.span_id)
+        stmt = stmt.offset(offset).limit(limit)
 
-        rows = conn.execute(query, params).fetchall()
-        count_row = conn.execute(count_query, count_params).fetchone()
+        models = session.execute(stmt).scalars().all()
+        total = session.execute(count_stmt).scalar() or 0
 
-    labels = []
-    for row in rows:
-        d = dict(row)
-        d["relevant_to_claim"] = bool(d["relevant_to_claim"]) if d["relevant_to_claim"] is not None else None
-        labels.append(_label_to_response(ClaimSpanLabel(**d)))
-
-    return ClaimSpanLabelListResponse(labels=labels, total=count_row[0])
+    labels = [_label_to_response(_model_to_label(m)) for m in models]
+    return ClaimSpanLabelListResponse(labels=labels, total=total)
 
 
 @router.post("", response_model=ClaimSpanLabelResponse, status_code=201)
@@ -112,21 +119,14 @@ def update_label(
     store: GoldStore = Depends(get_store),
 ) -> ClaimSpanLabelResponse:
     """Update a claim-span label."""
-    with store._connect() as conn:
-        row = conn.execute(
-            "SELECT * FROM claim_span_label WHERE claim_id = ? AND span_id = ?",
-            (claim_id, span_id),
-        ).fetchone()
+    # Get existing label (using 'system' as default annotator for backwards compat)
+    label = store.get_label(claim_id, span_id)
 
-    if row is None:
+    if label is None:
         raise HTTPException(
             status_code=404,
             detail=f"Label for claim {claim_id} and span {span_id} not found",
         )
-
-    d = dict(row)
-    d["relevant_to_claim"] = bool(d["relevant_to_claim"]) if d["relevant_to_claim"] is not None else None
-    label = ClaimSpanLabel(**d)
 
     # Apply updates
     if data.relevant_to_claim is not None:
@@ -151,22 +151,19 @@ def delete_label(
     store: GoldStore = Depends(get_store),
 ) -> Response:
     """Delete a claim-span label."""
-    with store._connect() as conn:
-        row = conn.execute(
-            "SELECT * FROM claim_span_label WHERE claim_id = ? AND span_id = ?",
-            (claim_id, span_id),
-        ).fetchone()
+    label = store.get_label(claim_id, span_id)
 
-    if row is None:
+    if label is None:
         raise HTTPException(
             status_code=404,
             detail=f"Label for claim {claim_id} and span {span_id} not found",
         )
 
-    with store._connect() as conn:
-        conn.execute(
-            "DELETE FROM claim_span_label WHERE claim_id = ? AND span_id = ?",
-            (claim_id, span_id),
+    deleted = store.delete_claim_span_label(claim_id, span_id)
+    if not deleted:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Label for claim {claim_id} and span {span_id} not found",
         )
 
     return Response(status_code=204)
@@ -184,13 +181,8 @@ def batch_upsert_labels(
 
     for label_data in data.labels:
         # Check if label exists
-        with store._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM claim_span_label WHERE claim_id = ? AND span_id = ?",
-                (label_data.claim_id, label_data.span_id),
-            ).fetchone()
-
-        is_update = row is not None
+        existing = store.get_label(label_data.claim_id, label_data.span_id)
+        is_update = existing is not None
 
         label = ClaimSpanLabel(
             claim_id=label_data.claim_id,

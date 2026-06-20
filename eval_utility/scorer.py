@@ -643,14 +643,22 @@ class Scorer:
         )
 
         # Compute coverage metrics from document annotations
-        with self.store._connect() as conn:
-            row = conn.execute("SELECT COUNT(*) FROM document_annotation").fetchone()
-            report.coverage.total_documents = row[0]
+        from .database import session_scope
+        from .models import DocumentAnnotationModel
+        from sqlalchemy import select, func
 
-            row = conn.execute(
-                "SELECT COUNT(*) FROM document_annotation WHERE lost_evidence_flag = 1"
-            ).fetchone()
-            report.coverage.lost_evidence_documents = row[0]
+        with session_scope() as session:
+            total_docs = session.execute(
+                select(func.count()).select_from(DocumentAnnotationModel)
+            ).scalar() or 0
+            report.coverage.total_documents = total_docs
+
+            lost_evidence = session.execute(
+                select(func.count()).select_from(DocumentAnnotationModel).where(
+                    DocumentAnnotationModel.lost_evidence_flag.is_(True)
+                )
+            ).scalar() or 0
+            report.coverage.lost_evidence_documents = lost_evidence
 
         return report
 

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from sqlalchemy import func, select
 
+from ..database import session_scope
+from ..models import RetrievalJudgmentModel
 from ..store import GoldStore, RetrievalJudgment
 from .dependencies import get_store
 from .schemas import (
@@ -33,6 +36,21 @@ def _judgment_to_response(judgment: RetrievalJudgment) -> RetrievalJudgmentRespo
     )
 
 
+def _model_to_judgment(m: RetrievalJudgmentModel) -> RetrievalJudgment:
+    """Convert SQLAlchemy model to dataclass."""
+    return RetrievalJudgment(
+        claim_id=m.claim_id,
+        document_id=m.document_id,
+        forage_query_id=m.forage_query_id,
+        relevant=m.relevant,
+        retrieval_rank=m.retrieval_rank,
+        annotator_id=m.annotator_id,
+        notes=m.notes,
+        created_at=m.created_at.isoformat() if m.created_at else "",
+        updated_at=m.updated_at.isoformat() if m.updated_at else "",
+    )
+
+
 @router.get("", response_model=RetrievalJudgmentListResponse)
 def list_judgments(
     claim_id: str | None = Query(None),
@@ -42,33 +60,26 @@ def list_judgments(
     store: GoldStore = Depends(get_store),
 ) -> RetrievalJudgmentListResponse:
     """List retrieval judgments (filter by claim_id, document_id)."""
-    with store._connect() as conn:
-        query = "SELECT * FROM retrieval_judgment WHERE 1=1"
-        count_query = "SELECT COUNT(*) FROM retrieval_judgment WHERE 1=1"
-        params: list = []
-        count_params: list = []
+    with session_scope() as session:
+        stmt = select(RetrievalJudgmentModel)
+        count_stmt = select(func.count()).select_from(RetrievalJudgmentModel)
 
         if claim_id is not None:
-            query += " AND claim_id = ?"
-            count_query += " AND claim_id = ?"
-            params.append(claim_id)
-            count_params.append(claim_id)
+            stmt = stmt.where(RetrievalJudgmentModel.claim_id == claim_id)
+            count_stmt = count_stmt.where(RetrievalJudgmentModel.claim_id == claim_id)
 
         if document_id is not None:
-            query += " AND document_id = ?"
-            count_query += " AND document_id = ?"
-            params.append(document_id)
-            count_params.append(document_id)
+            stmt = stmt.where(RetrievalJudgmentModel.document_id == document_id)
+            count_stmt = count_stmt.where(RetrievalJudgmentModel.document_id == document_id)
 
-        query += " ORDER BY claim_id, retrieval_rank LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
+        stmt = stmt.order_by(RetrievalJudgmentModel.claim_id, RetrievalJudgmentModel.retrieval_rank)
+        stmt = stmt.offset(offset).limit(limit)
 
-        rows = conn.execute(query, params).fetchall()
-        count_row = conn.execute(count_query, count_params).fetchone()
+        models = session.execute(stmt).scalars().all()
+        total = session.execute(count_stmt).scalar() or 0
 
-    judgments = [_judgment_to_response(RetrievalJudgment(**dict(row))) for row in rows]
-
-    return RetrievalJudgmentListResponse(judgments=judgments, total=count_row[0])
+    judgments = [_judgment_to_response(_model_to_judgment(m)) for m in models]
+    return RetrievalJudgmentListResponse(judgments=judgments, total=total)
 
 
 @router.post("", response_model=RetrievalJudgmentResponse, status_code=201)
@@ -103,19 +114,14 @@ def update_judgment(
     store: GoldStore = Depends(get_store),
 ) -> RetrievalJudgmentResponse:
     """Update a retrieval judgment."""
-    with store._connect() as conn:
-        row = conn.execute(
-            "SELECT * FROM retrieval_judgment WHERE claim_id = ? AND document_id = ?",
-            (claim_id, document_id),
-        ).fetchone()
+    # Get existing judgment (using 'system' as default annotator for backwards compat)
+    judgment = store.get_judgment(claim_id, document_id)
 
-    if row is None:
+    if judgment is None:
         raise HTTPException(
             status_code=404,
             detail=f"Judgment for claim {claim_id} and document {document_id} not found",
         )
-
-    judgment = RetrievalJudgment(**dict(row))
 
     # Apply updates
     if data.forage_query_id is not None:
@@ -140,22 +146,19 @@ def delete_judgment(
     store: GoldStore = Depends(get_store),
 ) -> Response:
     """Delete a retrieval judgment."""
-    with store._connect() as conn:
-        row = conn.execute(
-            "SELECT * FROM retrieval_judgment WHERE claim_id = ? AND document_id = ?",
-            (claim_id, document_id),
-        ).fetchone()
+    judgment = store.get_judgment(claim_id, document_id)
 
-    if row is None:
+    if judgment is None:
         raise HTTPException(
             status_code=404,
             detail=f"Judgment for claim {claim_id} and document {document_id} not found",
         )
 
-    with store._connect() as conn:
-        conn.execute(
-            "DELETE FROM retrieval_judgment WHERE claim_id = ? AND document_id = ?",
-            (claim_id, document_id),
+    deleted = store.delete_retrieval_judgment(claim_id, document_id)
+    if not deleted:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Judgment for claim {claim_id} and document {document_id} not found",
         )
 
     return Response(status_code=204)
@@ -173,13 +176,8 @@ def batch_upsert_judgments(
 
     for judgment_data in data.judgments:
         # Check if judgment exists
-        with store._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM retrieval_judgment WHERE claim_id = ? AND document_id = ?",
-                (judgment_data.claim_id, judgment_data.document_id),
-            ).fetchone()
-
-        is_update = row is not None
+        existing = store.get_judgment(judgment_data.claim_id, judgment_data.document_id)
+        is_update = existing is not None
 
         judgment = RetrievalJudgment(
             claim_id=judgment_data.claim_id,

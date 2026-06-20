@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, select
 
-from ..store import GoldStore
+from ..database import session_scope
+from ..models import ForageQueryModel, ForageStrategyModel
+from ..store import ForageQueryRecord, ForageStrategyRecord, GoldStore
 from .dependencies import get_store
 from .schemas import (
     ForageQueryListResponse,
@@ -17,7 +20,54 @@ from .schemas import (
 router = APIRouter()
 
 
-def _strategy_to_response(strategy) -> ForageStrategyResponse:
+def _model_to_strategy(m: ForageStrategyModel) -> ForageStrategyRecord:
+    """Convert SQLAlchemy model to dataclass."""
+    providers = m.providers if isinstance(m.providers, list) else []
+    return ForageStrategyRecord(
+        forage_strategy_id=m.forage_strategy_id,
+        claim_id=m.claim_id,
+        claim_text=m.claim_text,
+        mode=m.mode,
+        perspective=m.perspective,
+        generator_version=m.generator_version,
+        generator=m.generator,
+        claim_type=m.claim_type,
+        providers=providers,
+        context=m.context,
+        source=m.source,
+        fallback_reason=m.fallback_reason,
+        claim_decomposition=m.claim_decomposition,
+        polarity_reversal=m.polarity_reversal,
+        schema_plan=m.schema_plan,
+        captured_at=m.captured_at.isoformat() if m.captured_at else "",
+        created_at=m.created_at.isoformat() if m.created_at else "",
+    )
+
+
+def _model_to_query(m: ForageQueryModel) -> ForageQueryRecord:
+    """Convert SQLAlchemy model to dataclass."""
+    providers = m.providers if isinstance(m.providers, list) else []
+    return ForageQueryRecord(
+        forage_query_id=m.forage_query_id,
+        forage_strategy_id=m.forage_strategy_id,
+        pool=m.pool,
+        query=m.query,
+        strategy=m.strategy,
+        priority=m.priority,
+        rank=m.rank,
+        providers=providers,
+        intent_label=m.intent_label,
+        rationale=m.rationale,
+        retrieval_role=m.retrieval_role,
+        scheme=m.scheme,
+        critical_question_family=m.critical_question_family,
+        target_schema_need_id=m.target_schema_need_id,
+        fixture_id=m.fixture_id,
+        created_at=m.created_at.isoformat() if m.created_at else "",
+    )
+
+
+def _strategy_to_response(strategy: ForageStrategyRecord) -> ForageStrategyResponse:
     """Convert ForageStrategyRecord to response model."""
     return ForageStrategyResponse(
         forage_strategy_id=strategy.forage_strategy_id,
@@ -40,7 +90,7 @@ def _strategy_to_response(strategy) -> ForageStrategyResponse:
     )
 
 
-def _query_to_response(query) -> ForageQueryResponse:
+def _query_to_response(query: ForageQueryRecord) -> ForageQueryResponse:
     """Convert ForageQueryRecord to response model."""
     return ForageQueryResponse(
         forage_query_id=query.forage_query_id,
@@ -70,39 +120,22 @@ def list_strategies(
     store: GoldStore = Depends(get_store),
 ) -> ForageStrategyListResponse:
     """List forage strategies."""
-    # Get all strategies from store
-    with store._connect() as conn:
-        if claim_id:
-            rows = conn.execute(
-                "SELECT * FROM forage_strategy WHERE claim_id = ? ORDER BY captured_at LIMIT ? OFFSET ?",
-                (claim_id, limit, offset),
-            ).fetchall()
-            count_row = conn.execute(
-                "SELECT COUNT(*) FROM forage_strategy WHERE claim_id = ?", (claim_id,)
-            ).fetchone()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM forage_strategy ORDER BY captured_at LIMIT ? OFFSET ?",
-                (limit, offset),
-            ).fetchall()
-            count_row = conn.execute("SELECT COUNT(*) FROM forage_strategy").fetchone()
+    with session_scope() as session:
+        stmt = select(ForageStrategyModel)
+        count_stmt = select(func.count()).select_from(ForageStrategyModel)
 
-    import json
+        if claim_id is not None:
+            stmt = stmt.where(ForageStrategyModel.claim_id == claim_id)
+            count_stmt = count_stmt.where(ForageStrategyModel.claim_id == claim_id)
 
-    strategies = []
-    for row in rows:
-        d = dict(row)
-        d["providers"] = json.loads(d["providers"]) if d["providers"] else []
-        d["context"] = json.loads(d["context"]) if d["context"] else None
-        d["claim_decomposition"] = json.loads(d["claim_decomposition"]) if d["claim_decomposition"] else None
-        d["polarity_reversal"] = json.loads(d["polarity_reversal"]) if d["polarity_reversal"] else None
-        d["schema_plan"] = json.loads(d["schema_plan"]) if d["schema_plan"] else None
+        stmt = stmt.order_by(ForageStrategyModel.captured_at)
+        stmt = stmt.offset(offset).limit(limit)
 
-        from ..store import ForageStrategyRecord
+        models = session.execute(stmt).scalars().all()
+        total = session.execute(count_stmt).scalar() or 0
 
-        strategies.append(_strategy_to_response(ForageStrategyRecord(**d)))
-
-    return ForageStrategyListResponse(strategies=strategies, total=count_row[0])
+    strategies = [_strategy_to_response(_model_to_strategy(m)) for m in models]
+    return ForageStrategyListResponse(strategies=strategies, total=total)
 
 
 @router.get("/strategies/{strategy_id}", response_model=ForageStrategyDetailResponse)
@@ -147,31 +180,19 @@ def list_queries(
     store: GoldStore = Depends(get_store),
 ) -> ForageQueryListResponse:
     """List forage queries."""
-    import json
+    with session_scope() as session:
+        stmt = select(ForageQueryModel)
+        count_stmt = select(func.count()).select_from(ForageQueryModel)
 
-    with store._connect() as conn:
-        if strategy_id:
-            rows = conn.execute(
-                "SELECT * FROM forage_query WHERE forage_strategy_id = ? ORDER BY rank LIMIT ? OFFSET ?",
-                (strategy_id, limit, offset),
-            ).fetchall()
-            count_row = conn.execute(
-                "SELECT COUNT(*) FROM forage_query WHERE forage_strategy_id = ?", (strategy_id,)
-            ).fetchone()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM forage_query ORDER BY created_at LIMIT ? OFFSET ?",
-                (limit, offset),
-            ).fetchall()
-            count_row = conn.execute("SELECT COUNT(*) FROM forage_query").fetchone()
+        if strategy_id is not None:
+            stmt = stmt.where(ForageQueryModel.forage_strategy_id == strategy_id)
+            count_stmt = count_stmt.where(ForageQueryModel.forage_strategy_id == strategy_id)
 
-    queries = []
-    for row in rows:
-        d = dict(row)
-        d["providers"] = json.loads(d["providers"]) if d["providers"] else []
+        stmt = stmt.order_by(ForageQueryModel.rank)
+        stmt = stmt.offset(offset).limit(limit)
 
-        from ..store import ForageQueryRecord
+        models = session.execute(stmt).scalars().all()
+        total = session.execute(count_stmt).scalar() or 0
 
-        queries.append(_query_to_response(ForageQueryRecord(**d)))
-
-    return ForageQueryListResponse(queries=queries, total=count_row[0])
+    queries = [_query_to_response(_model_to_query(m)) for m in models]
+    return ForageQueryListResponse(queries=queries, total=total)

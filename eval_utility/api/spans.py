@@ -50,43 +50,52 @@ def list_spans(
     store: GoldStore = Depends(get_store),
 ) -> GoldSpanListResponse:
     """List gold spans (filter by document_id, is_claim_bearing, label_source)."""
-    with store._connect() as conn:
-        query = "SELECT * FROM gold_span WHERE 1=1"
-        count_query = "SELECT COUNT(*) FROM gold_span WHERE 1=1"
-        params: list = []
-        count_params: list = []
+    from sqlalchemy import func, select
+
+    from ..database import session_scope
+    from ..models import GoldSpanModel
+
+    with session_scope() as session:
+        stmt = select(GoldSpanModel)
+        count_stmt = select(func.count()).select_from(GoldSpanModel)
 
         if document_id is not None:
-            query += " AND document_id = ?"
-            count_query += " AND document_id = ?"
-            params.append(document_id)
-            count_params.append(document_id)
+            stmt = stmt.where(GoldSpanModel.document_id == document_id)
+            count_stmt = count_stmt.where(GoldSpanModel.document_id == document_id)
 
         if is_claim_bearing is not None:
-            query += " AND is_claim_bearing = ?"
-            count_query += " AND is_claim_bearing = ?"
-            params.append(int(is_claim_bearing))
-            count_params.append(int(is_claim_bearing))
+            stmt = stmt.where(GoldSpanModel.is_claim_bearing == is_claim_bearing)
+            count_stmt = count_stmt.where(GoldSpanModel.is_claim_bearing == is_claim_bearing)
 
         if label_source is not None:
-            query += " AND label_source = ?"
-            count_query += " AND label_source = ?"
-            params.append(label_source)
-            count_params.append(label_source)
+            stmt = stmt.where(GoldSpanModel.label_source == label_source)
+            count_stmt = count_stmt.where(GoldSpanModel.label_source == label_source)
 
-        query += " ORDER BY document_id, char_offset LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
+        stmt = stmt.order_by(GoldSpanModel.document_id, GoldSpanModel.char_offset)
+        stmt = stmt.offset(offset).limit(limit)
 
-        rows = conn.execute(query, params).fetchall()
-        count_row = conn.execute(count_query, count_params).fetchone()
+        models = session.execute(stmt).scalars().all()
+        total = session.execute(count_stmt).scalar() or 0
 
     spans = []
-    for row in rows:
-        d = dict(row)
-        d["is_claim_bearing"] = bool(d["is_claim_bearing"]) if d["is_claim_bearing"] is not None else None
-        spans.append(_span_to_response(GoldSpan(**d)))
+    for m in models:
+        span = GoldSpan(
+            span_id=m.span_id,
+            document_id=m.document_id,
+            fixture_id=m.fixture_id,
+            char_offset=m.char_offset,
+            char_length=m.char_length,
+            text=m.text,
+            is_claim_bearing=m.is_claim_bearing,
+            label_source=m.label_source,
+            annotator_id=m.annotator_id,
+            notes=m.notes,
+            created_at=m.created_at.isoformat() if m.created_at else "",
+            updated_at=m.updated_at.isoformat() if m.updated_at else "",
+        )
+        spans.append(_span_to_response(span))
 
-    return GoldSpanListResponse(spans=spans, total=count_row[0])
+    return GoldSpanListResponse(spans=spans, total=total)
 
 
 @router.post("", response_model=GoldSpanResponse, status_code=201)
@@ -158,10 +167,9 @@ def delete_span(
     if span is None:
         raise HTTPException(status_code=404, detail=f"Span {span_id} not found")
 
-    with store._connect() as conn:
-        # Delete related labels first
-        conn.execute("DELETE FROM claim_span_label WHERE span_id = ?", (span_id,))
-        conn.execute("DELETE FROM gold_span WHERE span_id = ?", (span_id,))
+    deleted = store.delete_gold_span(span_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Span {span_id} not found")
 
     return Response(status_code=204)
 

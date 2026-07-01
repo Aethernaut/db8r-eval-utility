@@ -1,0 +1,64 @@
+.menu {
+  background-color: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: var(--spacing-sm);
+  min-width: 150px;
+  max-width: 250px;
+  z-index: 1000;
+}
+
+.title {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  margin-bottom: var(--spacing-xs);
+}
+
+.chips {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.chip {
+  display: block;
+  width: 100%;
+  padding: var(--spacing-xs) var(--spacing-sm);
+  font-family: inherit;
+  font-size: 0.8125rem;
+  text-align: left;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: opacity 0.15s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chip:hover {
+  opacity: 0.8;
+}
+
+.claimBearing {
+  background-color: var(--span-claim-bearing);
+  color: var(--color-text);
+}
+
+.notClaimBearing {
+  background-color: var(--span-not-claim-bearing);
+  color: var(--color-text);
+}
+
+.unreviewed {
+  background-color: var(--span-unreviewed);
+  color: var(--color-text);
+}
+
+.prefill {
+  background-color: var(--span-prefill);
+  color: var(--color-text);
+  border: 1px dashed var(--span-prefill-border);
+}

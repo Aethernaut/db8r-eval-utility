@@ -44,6 +44,75 @@ class LabelSource(str, Enum):
     HUMAN_AUTHORED = "human_authored"
 
 
+# --- Evidence Quality Enums (Foraging Learning) ---
+
+
+class DocumentRelevance(str, Enum):
+    """Document-level relevance to claim (T1 categorical)."""
+
+    GERMANE = "germane"  # Directly relevant, contains usable evidence
+    PARTIALLY_GERMANE = "partially_germane"  # Some relevant content
+    BACKGROUND = "background"  # Provides context but not direct evidence
+    IRRELEVANT = "irrelevant"  # No bearing on the claim
+
+
+class ClaimRelation(str, Enum):
+    """Document's relation to the target claim."""
+
+    SUPPORTS = "supports"  # Evidence supports the claim
+    CONTRADICTS = "contradicts"  # Evidence contradicts the claim
+    MIXED = "mixed"  # Contains both supporting and contradicting evidence
+    BACKGROUND = "background"  # Contextual, not argumentative
+    UNCLEAR = "unclear"  # Relation cannot be determined
+
+
+class ExtractionQuality(str, Enum):
+    """Quality of extracted claim relative to source text."""
+
+    FAITHFUL = "faithful"  # Accurately represents source
+    OVERBROAD = "overbroad"  # Claims more than source supports
+    UNDERSPECIFIED = "underspecified"  # Missing important qualifiers
+    WRONG = "wrong"  # Misrepresents source
+    UNSUPPORTED = "unsupported"  # No source basis for claim
+
+
+class GroundingQuality(str, Enum):
+    """Quality of span grounding in source document."""
+
+    SUFFICIENT = "sufficient"  # Span + context adequate
+    MISSING_CONTEXT = "missing_context"  # Need more surrounding text
+    WRONG_SPAN = "wrong_span"  # Span boundaries incorrect
+    SOURCE_MISMATCH = "source_mismatch"  # Span doesn't match source doc
+
+
+class EvidenceUsability(str, Enum):
+    """Usability of evidence in debate context."""
+
+    ARGUMENT_SUPPORT = "argument_support"  # Could support main argument
+    REBUTTAL_SUPPORT = "rebuttal_support"  # Could support rebuttal
+    CONTEXT_ONLY = "context_only"  # Background, not argumentative
+    UNUSABLE = "unusable"  # Cannot use in debate
+
+
+class CorroborationStatus(str, Enum):
+    """Whether evidence is independent or duplicated."""
+
+    INDEPENDENT = "independent"  # Genuinely independent source
+    SAME_CLUSTER = "same_cluster"  # Same underlying source/wire story
+    DUPLICATE = "duplicate"  # Exact or near duplicate
+
+
+class SourceIssue(str, Enum):
+    """Issues with source document quality/accessibility."""
+
+    NONE = "none"
+    PAYWALL_PARTIAL = "paywall_partial"  # Partial extraction due to paywall
+    WEAK_ATTRIBUTION = "weak_attribution"  # Source attribution unclear
+    STALE_SOURCE = "stale_source"  # Information may be outdated
+    LOW_QUALITY_SOURCE = "low_quality_source"  # Unreliable source
+    MISSING_PRIMARY = "missing_primary"  # References primary not included
+
+
 class Stance(str, Enum):
     PRO = "PRO"
     CON = "CON"
@@ -94,6 +163,7 @@ class ClaimUpdate(BaseModel):
     proof_standard: ProofStandard | None = None
     split: Split | None = None
     notes: str | None = None
+    retrieval_complete: bool | None = None
 
 
 class ClaimResponse(BaseModel):
@@ -103,6 +173,7 @@ class ClaimResponse(BaseModel):
     proof_standard: ProofStandard | None = None
     split: Split
     notes: str | None = None
+    retrieval_complete: bool = False
     created_at: str
     updated_at: str
 
@@ -150,6 +221,12 @@ class DocumentAnnotationResponse(BaseModel):
     annotator_id: str | None = None
     created_at: str
     updated_at: str
+    # CC-3: MBFC Source Reliability metadata
+    publisher_name: str | None = None
+    publisher_mbfc_key: str | None = None
+    mbfc_factual_rating: str | None = None
+    mbfc_bias_rating: str | None = None
+    source_reliability: float | None = None
 
 
 # --- Gold Span Schemas ---
@@ -187,6 +264,11 @@ class GoldSpanResponse(BaseModel):
     notes: str | None = None
     created_at: str
     updated_at: str
+    # CC-3: Claim Attribution metadata
+    claim_attribution: dict[str, Any] | None = None
+    claimant_name: str | None = None
+    claimant_key: str | None = None
+    attribution_type: str | None = None
 
 
 class GoldSpanListResponse(BaseModel):
@@ -303,6 +385,109 @@ class JudgmentBatchResponse(BaseModel):
     judgments: list[RetrievalJudgmentResponse]
 
 
+# --- Evidence Quality Labels (Foraging Learning) ---
+
+
+class DocumentQualityLabelCreate(BaseModel):
+    """Create/update document-level quality labels."""
+
+    document_id: str
+    claim_id: str | None = None  # Optional: some labels are claim-specific
+    # Core relevance (extends T1 numeric scale with categorical)
+    relevance: DocumentRelevance | None = None
+    claim_relation: ClaimRelation | None = None
+    # Source quality issues (can have multiple)
+    source_issues: list[SourceIssue] | None = None
+    # Corroboration tracking
+    corroboration_status: CorroborationStatus | None = None
+    corroboration_cluster_id: str | None = None  # Links related docs
+    # Metadata
+    annotator_id: str | None = None
+    notes: str | None = None
+
+
+class DocumentQualityLabelUpdate(BaseModel):
+    """Update document-level quality labels."""
+
+    relevance: DocumentRelevance | None = None
+    claim_relation: ClaimRelation | None = None
+    source_issues: list[SourceIssue] | None = None
+    corroboration_status: CorroborationStatus | None = None
+    corroboration_cluster_id: str | None = None
+    annotator_id: str | None = None
+    notes: str | None = None
+
+
+class DocumentQualityLabelResponse(BaseModel):
+    """Document-level quality label response."""
+
+    id: str
+    document_id: str
+    claim_id: str | None = None
+    relevance: DocumentRelevance | None = None
+    claim_relation: ClaimRelation | None = None
+    source_issues: list[SourceIssue] | None = None
+    corroboration_status: CorroborationStatus | None = None
+    corroboration_cluster_id: str | None = None
+    annotator_id: str | None = None
+    notes: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class DocumentQualityLabelListResponse(BaseModel):
+    """List of document quality labels."""
+
+    labels: list[DocumentQualityLabelResponse]
+    total: int
+
+
+class SpanQualityLabelCreate(BaseModel):
+    """Create/update span-level quality labels."""
+
+    span_id: str
+    # Extraction quality
+    extraction_quality: ExtractionQuality | None = None
+    # Grounding quality
+    grounding_quality: GroundingQuality | None = None
+    # Evidence usability
+    evidence_usability: EvidenceUsability | None = None
+    # Metadata
+    annotator_id: str | None = None
+    notes: str | None = None
+
+
+class SpanQualityLabelUpdate(BaseModel):
+    """Update span-level quality labels."""
+
+    extraction_quality: ExtractionQuality | None = None
+    grounding_quality: GroundingQuality | None = None
+    evidence_usability: EvidenceUsability | None = None
+    annotator_id: str | None = None
+    notes: str | None = None
+
+
+class SpanQualityLabelResponse(BaseModel):
+    """Span-level quality label response."""
+
+    id: str
+    span_id: str
+    extraction_quality: ExtractionQuality | None = None
+    grounding_quality: GroundingQuality | None = None
+    evidence_usability: EvidenceUsability | None = None
+    annotator_id: str | None = None
+    notes: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class SpanQualityLabelListResponse(BaseModel):
+    """List of span quality labels."""
+
+    labels: list[SpanQualityLabelResponse]
+    total: int
+
+
 # --- Forage Strategy Schemas ---
 
 
@@ -385,10 +570,16 @@ class FixtureDocumentResponse(BaseModel):
     source_text_char_len: int
     extraction_status: ExtractionStatusResponse | None = None
     validation_warnings: list[str]
+    # CC-3: MBFC Source Reliability metadata
+    publisher_name: str | None = None
+    publisher_mbfc_key: str | None = None
+    mbfc_factual_rating: str | None = None
+    mbfc_bias_rating: str | None = None
 
 
 class FixtureDocumentDetailResponse(FixtureDocumentResponse):
     source_text: str
+    fixture_id: str | None = None  # Set when returned from /documents/next
 
 
 class FixtureSpanResponse(BaseModel):
@@ -403,6 +594,11 @@ class FixtureSpanResponse(BaseModel):
     claimset_orientation: str | None = None
     relevance_score: float | None = None
     verbatim_span: str | None = None
+    # CC-3: Claim Attribution metadata
+    claim_attribution: dict[str, Any] | None = None
+    claimant_name: str | None = None
+    claimant_key: str | None = None
+    attribution_type: str | None = None
 
 
 class FixtureRetrievalResultResponse(BaseModel):

@@ -73,13 +73,18 @@ Foraging capture uses MC-5 `POST /api/v1/foraging-strategy` (port 8000).
 
 ## Key Modules
 
-- `eval_utility/config.py` — Settings (ClaimCheck URL, τ=0.5, paths). Env prefix `EVAL_`.
+- `eval_utility/config.py` — Settings (ClaimCheck URL, τ=0.5, DATABASE_URL, auth). Env prefix `EVAL_`.
 - `eval_utility/capture.py` — Mode A/B/C capture + foraging via MC-5 (EU-2 ✓)
 - `eval_utility/fixtures.py` — Fixture loading with hash/verbatim verification (EU-3 ✓)
-- `eval_utility/store.py` — SQLite gold store with 9 record types (EU-3 ✓)
+- `eval_utility/store.py` — SQLAlchemy 2.0 gold store (EU-3, EU-7 ✓)
+- `eval_utility/models.py` — ORM models for all tables including auth (EU-7 ✓)
+- `eval_utility/database.py` — Engine factory, session management, SQLite/Postgres support (EU-7 ✓)
 - `eval_utility/scorer.py` — v1 metrics computation (EU-5 ✓): retrieval/extraction/fidelity/coverage metrics + JSON/HTML reports
 - `eval_utility/server.py` — FastAPI annotation API (EU-4 ✓): REST endpoints for fixtures, claims, spans, labels, judgments
 - `eval_utility/api/` — API routers and schemas (EU-4 ✓)
+- `eval_utility/api/auth.py` — Password hashing (argon2), session management, CSRF (EU-8 ✓)
+- `eval_utility/api/auth_routes.py` — Login/logout/me endpoints, invite acceptance (EU-8 ✓)
+- `eval_utility/api/users.py` — Admin-only user management, invite creation (EU-8 ✓)
 - `eval_utility/corpus.py` — 72-claim pre-RL stress corpus (EU-6 ✓): seed claims with family balance and split assignment
 
 ## External Service Contracts
@@ -143,3 +148,5 @@ scorer.export_html(report, Path("report.html"))
 | EU-4: Annotation API | ✓ Done |
 | EU-5: Scorer (v1 metrics) | ✓ Done |
 | EU-6: Seed 72-claim corpus | ✓ Done |
+| EU-7: SQLAlchemy 2.0 + multi-annotator re-keying | ✓ Done |
+| EU-8: Cookie-session auth + invite-only accounts | ✓ Done |

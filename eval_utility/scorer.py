@@ -181,6 +181,10 @@ class ScorerReport:
     by_length_bucket: dict[str, ExtractionMetrics] = field(default_factory=dict)
     by_capture_mode: dict[str, ExtractionMetrics] = field(default_factory=dict)
 
+    # CC-5: New breakouts
+    by_reliability_tier: dict[str, ExtractionMetrics] = field(default_factory=dict)
+    by_attribution_type: dict[str, ExtractionMetrics] = field(default_factory=dict)
+
     # Metadata
     fixtures_evaluated: int = 0
     fixtures_skipped_partial: int = 0
@@ -256,6 +260,26 @@ class ScorerReport:
                     }
                     for cm, m in self.by_capture_mode.items()
                 },
+                # CC-5: Source reliability tier breakout
+                "by_reliability_tier": {
+                    tier: {
+                        "well_formedness_precision": m.well_formedness_precision,
+                        "well_formed_recall": m.well_formed_recall,
+                        "total_extracted": m.total_extracted,
+                        "total_gold": m.total_gold_claim_bearing,
+                    }
+                    for tier, m in self.by_reliability_tier.items()
+                },
+                # CC-5: Attribution type breakout
+                "by_attribution_type": {
+                    attr: {
+                        "well_formedness_precision": m.well_formedness_precision,
+                        "well_formed_recall": m.well_formed_recall,
+                        "total_extracted": m.total_extracted,
+                        "total_gold": m.total_gold_claim_bearing,
+                    }
+                    for attr, m in self.by_attribution_type.items()
+                },
             },
         }
 
@@ -273,6 +297,17 @@ def get_length_bucket(char_len: int) -> str:
         return "long (20k-50k)"
     else:
         return "very_long (50k+)"
+
+
+def get_reliability_tier(reliability: float | None) -> str:
+    """CC-5: Categorize source reliability into tiers."""
+    if reliability is None:
+        return "unknown"
+    if reliability >= 0.8:
+        return "high (>=0.8)"
+    if reliability >= 0.6:
+        return "medium (0.6-0.8)"
+    return "low (<0.6)"
 
 
 def find_span_matches(
@@ -531,6 +566,10 @@ class Scorer:
         by_length_bucket: dict[str, ExtractionMetrics] = defaultdict(ExtractionMetrics)
         by_capture_mode: dict[str, ExtractionMetrics] = defaultdict(ExtractionMetrics)
 
+        # CC-5: New breakouts
+        by_reliability_tier: dict[str, ExtractionMetrics] = defaultdict(ExtractionMetrics)
+        by_attribution_type: dict[str, ExtractionMetrics] = defaultdict(ExtractionMetrics)
+
         for path in fixture_paths:
             try:
                 fixture = load_fixture(path, verify_hashes=False, verify_spans=False)
@@ -595,15 +634,24 @@ class Scorer:
                 matches, _, _ = find_span_matches(gold_spans, adjusted_extracted, self.iou_threshold)
                 matched_claim_bearing = sum(1 for m in matches if m.gold_span.is_claim_bearing)
 
+                # CC-5: Get reliability tier for this document
+                reliability_tier = get_reliability_tier(doc.source_reliability)
+
                 # Update breakouts
                 for breakout, key in [
                     (by_content_type, content_type),
                     (by_length_bucket, length_bucket),
                     (by_capture_mode, fixture.capture_mode),
+                    (by_reliability_tier, reliability_tier),  # CC-5
                 ]:
                     breakout[key].total_extracted += extracted_count
                     breakout[key].total_gold_claim_bearing += claim_bearing_count
                     breakout[key].matched_claim_bearing += matched_claim_bearing
+
+            # CC-5: Attribution type breakout (from extracted spans)
+            for span in fixture.spans:
+                attr_type = span.attribution_type or "unknown"
+                by_attribution_type[attr_type].total_extracted += 1
 
         # Count total gold spans
         counts = self.store.count_records()
@@ -616,6 +664,9 @@ class Scorer:
         report.by_content_type = dict(by_content_type)
         report.by_length_bucket = dict(by_length_bucket)
         report.by_capture_mode = dict(by_capture_mode)
+        # CC-5: New breakouts
+        report.by_reliability_tier = dict(by_reliability_tier)
+        report.by_attribution_type = dict(by_attribution_type)
 
         # Compute retrieval metrics from judgments
         claims = self.store.list_claims()
@@ -812,6 +863,22 @@ class Scorer:
             <table>
                 <tr><th>Capture Mode</th><th>Extracted</th><th>Gold</th><th>Precision</th><th>Recall</th></tr>
                 {"".join(f"<tr><td>{cm}</td><td>{m['total_extracted']}</td><td>{m['total_gold']}</td><td>{m['well_formedness_precision']:.1%}</td><td>{m['well_formed_recall']:.1%}</td></tr>" for cm, m in data['breakouts']['by_capture_mode'].items())}
+            </table>
+        </div>
+
+        <div class="card">
+            <h2>Breakouts by Source Reliability Tier</h2>
+            <table>
+                <tr><th>Reliability Tier</th><th>Extracted</th><th>Gold</th><th>Precision</th><th>Recall</th></tr>
+                {"".join(f"<tr><td>{tier}</td><td>{m['total_extracted']}</td><td>{m['total_gold']}</td><td>{m['well_formedness_precision']:.1%}</td><td>{m['well_formed_recall']:.1%}</td></tr>" for tier, m in data['breakouts']['by_reliability_tier'].items())}
+            </table>
+        </div>
+
+        <div class="card">
+            <h2>Breakouts by Attribution Type</h2>
+            <table>
+                <tr><th>Attribution Type</th><th>Extracted</th><th>Gold</th><th>Precision</th><th>Recall</th></tr>
+                {"".join(f"<tr><td>{attr}</td><td>{m['total_extracted']}</td><td>{m['total_gold']}</td><td>{m['well_formedness_precision']:.1%}</td><td>{m['well_formed_recall']:.1%}</td></tr>" for attr, m in data['breakouts']['by_attribution_type'].items())}
             </table>
         </div>
     </div>

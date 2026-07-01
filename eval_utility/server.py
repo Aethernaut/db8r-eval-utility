@@ -27,6 +27,7 @@ from .api import (
     foraging_router,
     judgments_router,
     labels_router,
+    quality_labels_router,
     spans_router,
 )
 from .api.auth_routes import bootstrap_admin
@@ -87,6 +88,7 @@ app.include_router(spans_router, prefix="/api/v1/spans", tags=["spans"])
 app.include_router(labels_router, prefix="/api/v1/labels", tags=["labels"])
 app.include_router(judgments_router, prefix="/api/v1/judgments", tags=["judgments"])
 app.include_router(foraging_router, prefix="/api/v1/foraging", tags=["foraging"])
+app.include_router(quality_labels_router, prefix="/api/v1/quality-labels", tags=["quality-labels"])
 app.include_router(dataset_router, prefix="/api/v1/dataset", tags=["dataset"])
 
 

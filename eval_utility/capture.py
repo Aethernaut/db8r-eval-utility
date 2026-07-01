@@ -76,6 +76,11 @@ class CapturedSpan:
     relevance_score: float | None = None
     # CC-10a: exact source span (== source_text[offset:offset+length]); preferred for IoU/slicing.
     verbatim_span: str | None = None
+    # CC-1: Claim Attribution Metadata (from ClaimCheck claim_attribution)
+    claim_attribution: dict[str, Any] | None = None
+    claimant_name: str | None = None
+    claimant_key: str | None = None
+    attribution_type: str | None = None  # direct_quote | paraphrase | editorial | etc.
 
 
 @dataclass(frozen=True)
@@ -96,6 +101,11 @@ class CapturedDocument:
     source_text_char_len: int
     extraction_status: ExtractionStatus | None = None
     validation_warnings: list[str] = field(default_factory=list)
+    # CC-1: MBFC Source Reliability (from ClaimCheck mbfc_metadata)
+    publisher_name: str | None = None
+    publisher_mbfc_key: str | None = None
+    mbfc_factual_rating: str | None = None  # HIGH | MOSTLY FACTUAL | etc.
+    mbfc_bias_rating: str | None = None  # LEFT | CENTER | RIGHT | etc.
 
 
 @dataclass(frozen=True)
@@ -134,6 +144,10 @@ class CapturedFixture:
     # Foraging context (EU-2f) — set when captured via foraging
     forage_strategy_id: str | None = None
     forage_query_id: str | None = None
+
+    # CC-1: Search Target Contract (from ClaimCheck search_target)
+    search_target_preset: str | None = None  # breadth_first | depth_first | custom
+    target_metrics: dict[str, Any] | None = None  # Coverage/diversity scores from job response
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dict for JSON storage."""
@@ -332,6 +346,9 @@ class CaptureClient:
             # Parse per-document extraction_status
             doc_extraction_status = self._parse_extraction_status(evidence_doc.get("extraction_status"))
 
+            # CC-1: Extract MBFC metadata if present
+            mbfc_metadata = evidence_doc.get("mbfc_metadata") or {}
+
             documents[doc_id] = CapturedDocument(
                 document_id=doc_id,
                 source_url=evidence_doc.get("source_url", ""),
@@ -347,6 +364,11 @@ class CaptureClient:
                 source_text_char_len=len(text),
                 extraction_status=doc_extraction_status,
                 validation_warnings=evidence_doc.get("validation_warnings", []),
+                # CC-1: MBFC Source Reliability fields
+                publisher_name=evidence_doc.get("publisher_name"),
+                publisher_mbfc_key=evidence_doc.get("publisher_mbfc_key"),
+                mbfc_factual_rating=mbfc_metadata.get("factual_rating"),
+                mbfc_bias_rating=mbfc_metadata.get("bias_rating"),
             )
 
         return documents
@@ -378,6 +400,10 @@ class CaptureClient:
             if offset is None or length is None:
                 continue
 
+            # CC-1: Extract claim attribution metadata
+            attribution = claim.get("claim_attribution")
+            attribution_dict = attribution if isinstance(attribution, dict) else None
+
             spans.append(
                 CapturedSpan(
                     claim_id=claim.get("claim_id", ""),
@@ -391,6 +417,11 @@ class CaptureClient:
                     claimset_orientation=claim.get("claimset_orientation"),
                     relevance_score=claim.get("relevance_score"),
                     verbatim_span=verbatim_by_id.get(claim.get("claim_id", "")),
+                    # CC-1: Claim Attribution fields
+                    claim_attribution=attribution_dict,
+                    claimant_name=attribution_dict.get("claimant_name") if attribution_dict else None,
+                    claimant_key=attribution_dict.get("claimant_key") if attribution_dict else None,
+                    attribution_type=attribution_dict.get("attribution_type") if attribution_dict else None,
                 )
             )
 
@@ -453,6 +484,7 @@ class CaptureClient:
         providers: list[str] | None = None,
         forage_strategy_id: str | None = None,
         forage_query_id: str | None = None,
+        target_preset: str | None = None,
     ) -> CaptureResult:
         """Mode A: Unilateral search via POST /api/v1/search.
 
@@ -462,6 +494,9 @@ class CaptureClient:
         Requests `full_document_extraction` per-call (CC-10b) so captures aren't truncated;
         the poll then retrieves full `source_text` + offsets (CC-10a). No dependency on the
         shared server's FULL_DOCUMENT_EXTRACTION_ENABLED flag.
+
+        Args:
+            target_preset: CC-1 Search Target preset ("breadth_first" | "depth_first" | "custom")
         """
         with self._http_client(self.settings.claimcheck_base_url, self.settings.claimcheck_timeout_seconds) as client:
             payload: dict[str, Any] = {
@@ -472,6 +507,9 @@ class CaptureClient:
             }
             if providers:
                 payload["providers"] = providers
+            # CC-1: Search Target Contract
+            if target_preset:
+                payload["search_target"] = {"preset": target_preset}
 
             resp = client.post("/api/v1/search", json=payload)
             resp.raise_for_status()
@@ -576,6 +614,11 @@ class CaptureClient:
         # Job-level extraction status
         extraction_status = self._parse_extraction_status(response.get("extraction_status"))
 
+        # CC-1: Extract search target metadata if present
+        search_target = response.get("search_target") or {}
+        search_target_preset = search_target.get("preset") if isinstance(search_target, dict) else None
+        target_metrics = response.get("target_metrics")
+
         fixture = CapturedFixture(
             fixture_id=fixture_id,
             capture_mode=capture_mode,
@@ -590,6 +633,9 @@ class CaptureClient:
             extraction_status=extraction_status,
             forage_strategy_id=forage_strategy_id,
             forage_query_id=forage_query_id,
+            # CC-1: Search Target Contract
+            search_target_preset=search_target_preset,
+            target_metrics=target_metrics,
         )
 
         fixture_path = self._save_fixture(fixture)

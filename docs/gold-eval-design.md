@@ -64,6 +64,26 @@ claim ──[db8r-mcts generator: MC-5 /api/v1/foraging-strategy]──► forag
 - `retrieval_judgment` and `relevant_to_claim` are `(claim × document)` → reused across all generator versions.
 - The only thing that invalidates span labels is a change to a document's `source_text` (a ClaimCheck **extraction** rebuild) → a new fixture/hash. Old labels stay valid against the old fixture; a migration pass re-locates gold spans by verbatim text-match into the new `source_text`, hand-reviewing only the misses.
 
+### 3.3 Independence & active selection (the gold set as a specification)
+
+This harness treats the human gold set not as a *test set* sampled from the pipeline's own distribution, but as an **independent specification** of what correct retrieval/extraction/stance looks like — the standard the pipeline is measured *against*, authored by a different process than the one under test. This framing follows the "human judgement as a specification" argument in [PICK](https://blog.brownplt.org/2026/06/09/pick.html); two of its principles change concrete design here.
+
+**(a) Independence is a measured guarantee, not an assumption.** The blind-subset / anchoring protocol (§3.2 pre-fill posture, §6 annotation UX) exists *because* our default "pre-fill the pipeline's candidate, don't author" posture is in tension with witness independence: an annotator shown the extractor's span and stance can rubber-stamp it, and a gold set that merely echoes the pipeline cannot witness the pipeline's errors. We therefore promote anchoring from a UX nicety to a **first-class independence metric**:
+
+- A **blind tranche** — a randomized fraction of `(claim, document/span)` units annotated *without* the pipeline's candidate shown — is reserved per task. Size it to estimate the delta with usable CIs (target ≥15% of each task's units, never below the per-claim seeding floor in §4.9).
+- Report the **anchoring coefficient**: the divergence between prefilled and blind labels on matched units (e.g. share of blind units whose `is_claim_bearing` / `relevant_to_claim` / span boundary disagrees with what the prefilled arm accepted). A *low* coefficient means pre-filling is safe and cheap; a *high* coefficient means our gold is being captured by the pipeline and the headline metrics (germane recall, `polarity_error_rate`) are optimistic. The coefficient is published alongside those metrics, not buried — it bounds their trust.
+- Corollary: a same-family LLM judge (the cross-model calibration channel) is **not** an independent witness — it shares the pipeline's priors, so its agreement is partly redundancy, not confirmation. It stays a *weak second opinion* for triage/scale, never a substitute for human gold. (This is the anti-circularity rule already implicit in §2, now given its rationale.)
+
+**(b) Annotate where the pipeline is most uncertain — active, disagreement-driven selection.** Uniform annotation spends judgments where the pipeline is already confident and correct. PICK's formal move is *difference-sampling* — preferring inputs that *distinguish* candidate specifications. The empirical analog here is to **prioritize the work-queue by intra-pipeline disagreement**, because a disagreeing unit is where one human judgment removes the most uncertainty and most directly trains the verifier:
+
+- **Stance disagreement:** the heuristic verifier vs. the LLM `FocusedSemanticRelationClassifier` assign different `evidential_relation` polarity/strength to the same `(claim, span)`.
+- **Foraging disagreement:** different foraging strategies / `generator_version`s surface disjoint document sets for a claim (high symmetric difference → annotate the contested documents first).
+- **Extraction disagreement:** different extraction configs (model, `full_document_extraction`, char cap) yield non-overlapping or boundary-divergent spans for the same `source_text`.
+
+These signals compose into a **priority score** surfaced in the dashboard work-queue (§6), so annotators are routed to maximum-information units first. The labels they produce are exactly the ones that feed verifier training (MC-2/MC-3 semantic-admission tuning) — closing the loop from "where the system is unsure" to "what the human decides" to "what the verifier learns."
+
+**(c) Disagreement among *humans* is signal, not just noise.** PICK models a single articulable user intent; our targets include genuinely contestable claims, where two careful annotators legitimately differ. We therefore do **not** collapse inter-annotator disagreement into error: the κ / per-unit adjudication machinery (deploy plan EU-9, §3.2) records a **contestability flag** for units with durable, post-adjudication disagreement, and these are reported separately from extraction/retrieval defects. A high-contestability claim is a property of the *world*, not a bug in the gold set — and it is precisely the kind of claim a debate system must represent honestly rather than force to a single polarity.
+
 ## 4. v1 gold-set schema
 
 The store has two layers: **fixtures** (captured, immutable) and **gold annotations** (reference fixtures by hash). The annotations serve **three tasks** (see §6): **T1 retrieval judgment**, **T2 span annotation**, **T3 stance/strength**. Two judgment frames matter and live at **different layers** (this is the key schema decision):

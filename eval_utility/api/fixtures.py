@@ -7,7 +7,8 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..fixtures import FixtureIntegrityError, list_fixtures, load_fixture
-from .dependencies import get_fixtures_dir
+from ..store import GoldStore
+from .dependencies import get_fixtures_dir, get_store
 from .schemas import (
     ExtractionStatusResponse,
     FixtureDetailResponse,
@@ -128,6 +129,36 @@ def list_all_fixtures(
             continue
 
     return FixtureListResponse(fixtures=fixtures, total=total)
+
+
+@router.get("/documents/next", response_model=FixtureDocumentDetailResponse)
+def get_next_document(
+    fixtures_dir: Path = Depends(get_fixtures_dir),
+    store: GoldStore = Depends(get_store),
+) -> FixtureDocumentDetailResponse:
+    """Get the next document that needs span annotation (not exhaustively annotated).
+
+    Returns a document from any fixture that hasn't been marked as exhaustively_annotated.
+    """
+    fixture_paths = list_fixtures(fixtures_dir)
+
+    for fixture_path in fixture_paths:
+        try:
+            fixture = load_fixture(fixture_path, verify_hashes=False, verify_spans=False)
+            for doc in fixture.documents:
+                # Check if this document has been exhaustively annotated
+                annotation = store.get_document_annotation(doc.source_text_hash)
+                if annotation is None or not annotation.exhaustively_annotated:
+                    # Found an unannotated document
+                    response = _document_to_response(doc, include_source_text=True)
+                    # Add fixture_id to the response (needed for prefill)
+                    response.fixture_id = fixture.fixture_id
+                    return response
+        except (FixtureIntegrityError, Exception):
+            # Skip fixtures that fail to load
+            continue
+
+    raise HTTPException(status_code=404, detail="No documents need annotation")
 
 
 @router.get("/{fixture_id}", response_model=FixtureDetailResponse)

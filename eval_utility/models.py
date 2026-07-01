@@ -212,6 +212,12 @@ class DocumentAnnotationModel(Base):
     annotator_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+    # CC-2: MBFC Source Reliability metadata
+    publisher_name: Mapped[str | None] = mapped_column(String(255))
+    publisher_mbfc_key: Mapped[str | None] = mapped_column(String(100))
+    mbfc_factual_rating: Mapped[str | None] = mapped_column(String(50))
+    mbfc_bias_rating: Mapped[str | None] = mapped_column(String(50))
+    source_reliability: Mapped[float | None] = mapped_column(Float)
 
 
 # -----------------------------------------------------------------------------
@@ -236,6 +242,11 @@ class GoldSpanModel(Base):
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+    # CC-2: Claim Attribution Metadata (captured from pipeline)
+    claim_attribution: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    claimant_name: Mapped[str | None] = mapped_column(String(255))
+    claimant_key: Mapped[str | None] = mapped_column(String(100))
+    attribution_type: Mapped[str | None] = mapped_column(String(50))
 
     __table_args__ = (
         CheckConstraint(
@@ -315,6 +326,22 @@ class RetrievalJudgmentModel(Base):
         Index("idx_retrieval_judgment_claim", "claim_id"),
         Index("idx_retrieval_judgment_document", "document_id"),
     )
+
+
+# -----------------------------------------------------------------------------
+# Fixture Metadata (CC-2)
+# -----------------------------------------------------------------------------
+
+
+class FixtureMetadataModel(Base):
+    """Per-fixture metadata (search target, target metrics)."""
+
+    __tablename__ = "fixture_metadata"
+
+    fixture_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    search_target_preset: Mapped[str | None] = mapped_column(String(50))
+    target_metrics: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 # -----------------------------------------------------------------------------
@@ -483,3 +510,99 @@ class AuditLogModel(Base):
     details: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
     __table_args__ = (Index("idx_audit_log_user", "user_id"), Index("idx_audit_log_action", "action"))
+
+
+# -----------------------------------------------------------------------------
+# Evidence Quality Labels (Foraging Learning)
+# -----------------------------------------------------------------------------
+
+
+class DocumentQualityLabelModel(Base):
+    """Document-level quality labels for foraging learning.
+
+    These labels assess document quality independent of specific spans:
+    - relevance: categorical relevance to claim
+    - claim_relation: supports/contradicts/mixed/background
+    - source_issues: paywall, attribution, staleness, etc.
+    - corroboration: independent vs duplicate sources
+    """
+
+    __tablename__ = "document_quality_label"
+
+    id: Mapped[str] = mapped_column(String(50), primary_key=True, default=lambda: _generate_id("dql"))
+    document_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    claim_id: Mapped[str | None] = mapped_column(String(50), ForeignKey("claim.claim_id"), index=True)
+    # Core relevance (categorical, extends numeric T1 scale)
+    relevance: Mapped[str | None] = mapped_column(String(30))
+    claim_relation: Mapped[str | None] = mapped_column(String(20))
+    # Source issues (JSON array since can have multiple)
+    source_issues: Mapped[list[str] | None] = mapped_column(JSON)
+    # Corroboration tracking
+    corroboration_status: Mapped[str | None] = mapped_column(String(20))
+    corroboration_cluster_id: Mapped[str | None] = mapped_column(String(50), index=True)
+    # Metadata
+    annotator_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"))
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+    __table_args__ = (
+        CheckConstraint(
+            "relevance IN ('germane', 'partially_germane', 'background', 'irrelevant')",
+            name="valid_doc_relevance",
+        ),
+        CheckConstraint(
+            "claim_relation IN ('supports', 'contradicts', 'mixed', 'background', 'unclear')",
+            name="valid_claim_relation",
+        ),
+        CheckConstraint(
+            "corroboration_status IN ('independent', 'same_cluster', 'duplicate')",
+            name="valid_corroboration_status",
+        ),
+        Index("idx_doc_quality_document", "document_id"),
+        Index("idx_doc_quality_claim", "claim_id"),
+        Index("idx_doc_quality_cluster", "corroboration_cluster_id"),
+    )
+
+
+class SpanQualityLabelModel(Base):
+    """Span-level quality labels for foraging learning.
+
+    These labels assess extracted span quality:
+    - extraction_quality: faithful/overbroad/underspecified/wrong/unsupported
+    - grounding_quality: sufficient/missing_context/wrong_span/source_mismatch
+    - evidence_usability: argument_support/rebuttal_support/context_only/unusable
+    """
+
+    __tablename__ = "span_quality_label"
+
+    id: Mapped[str] = mapped_column(String(50), primary_key=True, default=lambda: _generate_id("sql"))
+    span_id: Mapped[str] = mapped_column(String(50), ForeignKey("gold_span.span_id"), nullable=False, index=True)
+    # Extraction quality
+    extraction_quality: Mapped[str | None] = mapped_column(String(20))
+    # Grounding quality
+    grounding_quality: Mapped[str | None] = mapped_column(String(20))
+    # Evidence usability
+    evidence_usability: Mapped[str | None] = mapped_column(String(20))
+    # Metadata
+    annotator_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"))
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+    __table_args__ = (
+        CheckConstraint(
+            "extraction_quality IN ('faithful', 'overbroad', 'underspecified', 'wrong', 'unsupported')",
+            name="valid_extraction_quality",
+        ),
+        CheckConstraint(
+            "grounding_quality IN ('sufficient', 'missing_context', 'wrong_span', 'source_mismatch')",
+            name="valid_grounding_quality",
+        ),
+        CheckConstraint(
+            "evidence_usability IN ('argument_support', 'rebuttal_support', 'context_only', 'unusable')",
+            name="valid_evidence_usability",
+        ),
+        Index("idx_span_quality_span", "span_id"),
+        Index("idx_span_quality_annotator", "annotator_id"),
+    )

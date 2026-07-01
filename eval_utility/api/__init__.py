@@ -7,6 +7,7 @@ from .fixtures import router as fixtures_router
 from .foraging import router as foraging_router
 from .judgments import router as judgments_router
 from .labels import router as labels_router
+from .quality_labels import router as quality_labels_router
 from .spans import router as spans_router
 
 __all__ = [
@@ -17,5 +18,6 @@ __all__ = [
     "foraging_router",
     "judgments_router",
     "labels_router",
+    "quality_labels_router",
     "spans_router",
 ]

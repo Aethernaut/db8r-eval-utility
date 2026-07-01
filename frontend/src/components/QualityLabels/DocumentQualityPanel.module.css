@@ -1,0 +1,104 @@
+/* DocumentQualityPanel styles */
+
+.panel {
+  background: var(--color-surface, #f8f9fa);
+  border: 1px solid var(--color-border, #e9ecef);
+  border-radius: 8px;
+  padding: 16px;
+  margin-top: 16px;
+}
+
+.panelTitle {
+  margin: 0 0 16px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-secondary, #495057);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.section {
+  margin-bottom: 16px;
+}
+
+.section:last-child {
+  margin-bottom: 0;
+}
+
+.sectionLabel {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text, #212529);
+  margin-bottom: 8px;
+}
+
+.buttonGroup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.optionButton {
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid var(--color-border, #dee2e6);
+  border-radius: 4px;
+  background: white;
+  color: var(--color-text, #495057);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.optionButton:hover:not(:disabled) {
+  background: var(--color-surface-hover, #e9ecef);
+  border-color: var(--color-border-hover, #adb5bd);
+}
+
+.optionButton.selected {
+  background: var(--color-primary, #228be6);
+  border-color: var(--color-primary, #228be6);
+  color: white;
+}
+
+.optionButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.checkboxGroup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.checkboxLabel {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  border: 1px solid var(--color-border, #dee2e6);
+  border-radius: 4px;
+  background: white;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.checkboxLabel:hover {
+  background: var(--color-surface-hover, #e9ecef);
+}
+
+.checkboxLabel.checked {
+  background: var(--color-primary-light, #e7f5ff);
+  border-color: var(--color-primary, #228be6);
+  color: var(--color-primary-dark, #1864ab);
+}
+
+.checkboxLabel input[type='checkbox'] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  cursor: pointer;
+}

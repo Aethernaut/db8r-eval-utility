@@ -34,15 +34,18 @@ from .config import Settings, get_settings
 from .database import init_db, session_scope
 from .models import (
     SCHEMA_VERSION,
+    ClaimAnnotationStateModel,
     ClaimDocumentLinkModel,
     ClaimModel,
     ClaimSpanLabelModel,
     DatasetModel,
     DocumentAnnotationModel,
+    DocumentQualityLabelModel,
     ForageQueryModel,
     ForageStrategyModel,
     GoldSpanModel,
     RetrievalJudgmentModel,
+    SpanQualityLabelModel,
 )
 
 # Re-export SCHEMA_VERSION
@@ -149,6 +152,18 @@ class RetrievalJudgment:
 
 
 @dataclass
+class ClaimAnnotationState:
+    """Per-claim annotation state (retrieval_complete flag)."""
+
+    claim_id: str
+    retrieval_complete: bool = False
+    completed_by: str | None = None
+    completed_at: str | None = None
+    created_at: str = ""
+    updated_at: str = ""
+
+
+@dataclass
 class ForageStrategyRecord:
     """A forage strategy from db8r-mcts."""
 
@@ -200,6 +215,39 @@ class Dataset:
     dataset_version: str
     schema_version: str
     annotation_guidelines_version: str | None = None
+    created_at: str = ""
+    updated_at: str = ""
+
+
+@dataclass
+class DocumentQualityLabel:
+    """Document-level quality labels for foraging learning."""
+
+    id: str
+    document_id: str
+    claim_id: str | None = None
+    relevance: str | None = None  # germane|partially_germane|background|irrelevant
+    claim_relation: str | None = None  # supports|contradicts|mixed|background|unclear
+    source_issues: list[str] | None = None  # paywall_partial|weak_attribution|stale_source|...
+    corroboration_status: str | None = None  # independent|same_cluster|duplicate
+    corroboration_cluster_id: str | None = None
+    annotator_id: str | None = None
+    notes: str | None = None
+    created_at: str = ""
+    updated_at: str = ""
+
+
+@dataclass
+class SpanQualityLabel:
+    """Span-level quality labels for foraging learning."""
+
+    id: str
+    span_id: str
+    extraction_quality: str | None = None  # faithful|overbroad|underspecified|wrong|unsupported
+    grounding_quality: str | None = None  # sufficient|missing_context|wrong_span|source_mismatch
+    evidence_usability: str | None = None  # argument_support|rebuttal_support|context_only|unusable
+    annotator_id: str | None = None
+    notes: str | None = None
     created_at: str = ""
     updated_at: str = ""
 
@@ -289,6 +337,17 @@ def _retrieval_judgment_from_model(model: RetrievalJudgmentModel) -> RetrievalJu
     )
 
 
+def _claim_annotation_state_from_model(model: ClaimAnnotationStateModel) -> ClaimAnnotationState:
+    return ClaimAnnotationState(
+        claim_id=model.claim_id,
+        retrieval_complete=model.retrieval_complete,
+        completed_by=model.completed_by,
+        completed_at=model.completed_at.isoformat() if model.completed_at else None,
+        created_at=model.created_at.isoformat() if model.created_at else "",
+        updated_at=model.updated_at.isoformat() if model.updated_at else "",
+    )
+
+
 def _forage_strategy_from_model(model: ForageStrategyModel) -> ForageStrategyRecord:
     providers = model.providers if isinstance(model.providers, list) else []
     return ForageStrategyRecord(
@@ -339,6 +398,38 @@ def _dataset_from_model(model: DatasetModel) -> Dataset:
         dataset_version=model.dataset_version,
         schema_version=model.schema_version,
         annotation_guidelines_version=model.annotation_guidelines_version,
+        created_at=model.created_at.isoformat() if model.created_at else "",
+        updated_at=model.updated_at.isoformat() if model.updated_at else "",
+    )
+
+
+def _document_quality_label_from_model(model: DocumentQualityLabelModel) -> DocumentQualityLabel:
+    source_issues = model.source_issues if isinstance(model.source_issues, list) else None
+    return DocumentQualityLabel(
+        id=model.id,
+        document_id=model.document_id,
+        claim_id=model.claim_id,
+        relevance=model.relevance,
+        claim_relation=model.claim_relation,
+        source_issues=source_issues,
+        corroboration_status=model.corroboration_status,
+        corroboration_cluster_id=model.corroboration_cluster_id,
+        annotator_id=model.annotator_id,
+        notes=model.notes,
+        created_at=model.created_at.isoformat() if model.created_at else "",
+        updated_at=model.updated_at.isoformat() if model.updated_at else "",
+    )
+
+
+def _span_quality_label_from_model(model: SpanQualityLabelModel) -> SpanQualityLabel:
+    return SpanQualityLabel(
+        id=model.id,
+        span_id=model.span_id,
+        extraction_quality=model.extraction_quality,
+        grounding_quality=model.grounding_quality,
+        evidence_usability=model.evidence_usability,
+        annotator_id=model.annotator_id,
+        notes=model.notes,
         created_at=model.created_at.isoformat() if model.created_at else "",
         updated_at=model.updated_at.isoformat() if model.updated_at else "",
     )
@@ -461,6 +552,68 @@ class GoldStore:
                 session.delete(model)
                 return True
         return False
+
+    # --- Claim Annotation State methods ---
+
+    def get_claim_annotation_state(self, claim_id: str) -> ClaimAnnotationState | None:
+        """Get annotation state for a claim."""
+        with session_scope() as session:
+            model = session.execute(
+                select(ClaimAnnotationStateModel).where(ClaimAnnotationStateModel.claim_id == claim_id)
+            ).scalar_one_or_none()
+            if model:
+                return _claim_annotation_state_from_model(model)
+        return None
+
+    def set_retrieval_complete(self, claim_id: str, complete: bool, completed_by: str | None = None) -> ClaimAnnotationState:
+        """Set retrieval_complete flag for a claim."""
+        from datetime import datetime, timezone
+
+        with session_scope() as session:
+            existing = session.execute(
+                select(ClaimAnnotationStateModel).where(ClaimAnnotationStateModel.claim_id == claim_id)
+            ).scalar_one_or_none()
+
+            if existing:
+                existing.retrieval_complete = complete
+                if complete:
+                    existing.completed_by = completed_by
+                    existing.completed_at = datetime.now(timezone.utc)
+                else:
+                    existing.completed_by = None
+                    existing.completed_at = None
+                model = existing
+            else:
+                model = ClaimAnnotationStateModel(
+                    claim_id=claim_id,
+                    retrieval_complete=complete,
+                    completed_by=completed_by if complete else None,
+                    completed_at=datetime.now(timezone.utc) if complete else None,
+                )
+                session.add(model)
+
+            session.flush()
+            return _claim_annotation_state_from_model(model)
+
+    def get_next_incomplete_claim(self) -> Claim | None:
+        """Get the next claim that doesn't have retrieval_complete=True."""
+        with session_scope() as session:
+            # Find claims that either have no annotation state or have retrieval_complete=False
+            # Using outerjoin to include claims without annotation state
+            stmt = (
+                select(ClaimModel)
+                .outerjoin(ClaimAnnotationStateModel)
+                .where(
+                    (ClaimAnnotationStateModel.claim_id.is_(None))
+                    | (ClaimAnnotationStateModel.retrieval_complete.is_(False))
+                )
+                .order_by(ClaimModel.claim_id)
+                .limit(1)
+            )
+            model = session.execute(stmt).scalar_one_or_none()
+            if model:
+                return _claim_from_model(model)
+        return None
 
     # --- Claim-Document Link methods ---
 
@@ -966,6 +1119,256 @@ class GoldStore:
             session.flush()
             return _dataset_from_model(model)
 
+    # --- Document Quality Label methods ---
+
+    def upsert_document_quality_label(self, label: DocumentQualityLabel) -> DocumentQualityLabel:
+        """Insert or update a document quality label."""
+        with session_scope() as session:
+            existing = session.execute(
+                select(DocumentQualityLabelModel).where(DocumentQualityLabelModel.id == label.id)
+            ).scalar_one_or_none()
+
+            if existing:
+                existing.relevance = label.relevance
+                existing.claim_relation = label.claim_relation
+                existing.source_issues = label.source_issues
+                existing.corroboration_status = label.corroboration_status
+                existing.corroboration_cluster_id = label.corroboration_cluster_id
+                existing.annotator_id = label.annotator_id
+                existing.notes = label.notes
+                model = existing
+            else:
+                model = DocumentQualityLabelModel(
+                    id=label.id or _generate_id("dql"),
+                    document_id=label.document_id,
+                    claim_id=label.claim_id,
+                    relevance=label.relevance,
+                    claim_relation=label.claim_relation,
+                    source_issues=label.source_issues,
+                    corroboration_status=label.corroboration_status,
+                    corroboration_cluster_id=label.corroboration_cluster_id,
+                    annotator_id=label.annotator_id,
+                    notes=label.notes,
+                )
+                session.add(model)
+
+            session.flush()
+            return _document_quality_label_from_model(model)
+
+    def create_document_quality_label(
+        self,
+        document_id: str,
+        claim_id: str | None = None,
+        relevance: str | None = None,
+        claim_relation: str | None = None,
+        source_issues: list[str] | None = None,
+        corroboration_status: str | None = None,
+        corroboration_cluster_id: str | None = None,
+        annotator_id: str | None = None,
+        notes: str | None = None,
+    ) -> DocumentQualityLabel:
+        """Create a new document quality label."""
+        label = DocumentQualityLabel(
+            id=_generate_id("dql"),
+            document_id=document_id,
+            claim_id=claim_id,
+            relevance=relevance,
+            claim_relation=claim_relation,
+            source_issues=source_issues,
+            corroboration_status=corroboration_status,
+            corroboration_cluster_id=corroboration_cluster_id,
+            annotator_id=annotator_id,
+            notes=notes,
+        )
+        return self.upsert_document_quality_label(label)
+
+    def get_document_quality_label(self, label_id: str) -> DocumentQualityLabel | None:
+        """Get a document quality label by ID."""
+        with session_scope() as session:
+            model = session.execute(
+                select(DocumentQualityLabelModel).where(DocumentQualityLabelModel.id == label_id)
+            ).scalar_one_or_none()
+            if model:
+                return _document_quality_label_from_model(model)
+        return None
+
+    def get_document_quality_labels_for_document(
+        self, document_id: str, claim_id: str | None = None
+    ) -> list[DocumentQualityLabel]:
+        """Get all quality labels for a document, optionally filtered by claim."""
+        with session_scope() as session:
+            stmt = select(DocumentQualityLabelModel).where(
+                DocumentQualityLabelModel.document_id == document_id
+            )
+            if claim_id:
+                stmt = stmt.where(DocumentQualityLabelModel.claim_id == claim_id)
+            stmt = stmt.order_by(DocumentQualityLabelModel.created_at)
+            models = session.execute(stmt).scalars().all()
+            return [_document_quality_label_from_model(m) for m in models]
+
+    def list_document_quality_labels(
+        self,
+        document_id: str | None = None,
+        claim_id: str | None = None,
+        relevance: str | None = None,
+        corroboration_cluster_id: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[list[DocumentQualityLabel], int]:
+        """List document quality labels with filters."""
+        with session_scope() as session:
+            stmt = select(DocumentQualityLabelModel)
+            if document_id:
+                stmt = stmt.where(DocumentQualityLabelModel.document_id == document_id)
+            if claim_id:
+                stmt = stmt.where(DocumentQualityLabelModel.claim_id == claim_id)
+            if relevance:
+                stmt = stmt.where(DocumentQualityLabelModel.relevance == relevance)
+            if corroboration_cluster_id:
+                stmt = stmt.where(
+                    DocumentQualityLabelModel.corroboration_cluster_id == corroboration_cluster_id
+                )
+
+            # Count total
+            from sqlalchemy import func
+
+            count_stmt = select(func.count()).select_from(stmt.subquery())
+            total = session.execute(count_stmt).scalar() or 0
+
+            # Apply pagination
+            stmt = stmt.order_by(DocumentQualityLabelModel.created_at.desc())
+            stmt = stmt.offset(offset).limit(limit)
+            models = session.execute(stmt).scalars().all()
+            return [_document_quality_label_from_model(m) for m in models], total
+
+    def delete_document_quality_label(self, label_id: str) -> bool:
+        """Delete a document quality label by ID."""
+        with session_scope() as session:
+            model = session.execute(
+                select(DocumentQualityLabelModel).where(DocumentQualityLabelModel.id == label_id)
+            ).scalar_one_or_none()
+            if model:
+                session.delete(model)
+                return True
+        return False
+
+    # --- Span Quality Label methods ---
+
+    def upsert_span_quality_label(self, label: SpanQualityLabel) -> SpanQualityLabel:
+        """Insert or update a span quality label."""
+        with session_scope() as session:
+            existing = session.execute(
+                select(SpanQualityLabelModel).where(SpanQualityLabelModel.id == label.id)
+            ).scalar_one_or_none()
+
+            if existing:
+                existing.extraction_quality = label.extraction_quality
+                existing.grounding_quality = label.grounding_quality
+                existing.evidence_usability = label.evidence_usability
+                existing.annotator_id = label.annotator_id
+                existing.notes = label.notes
+                model = existing
+            else:
+                model = SpanQualityLabelModel(
+                    id=label.id or _generate_id("sql"),
+                    span_id=label.span_id,
+                    extraction_quality=label.extraction_quality,
+                    grounding_quality=label.grounding_quality,
+                    evidence_usability=label.evidence_usability,
+                    annotator_id=label.annotator_id,
+                    notes=label.notes,
+                )
+                session.add(model)
+
+            session.flush()
+            return _span_quality_label_from_model(model)
+
+    def create_span_quality_label(
+        self,
+        span_id: str,
+        extraction_quality: str | None = None,
+        grounding_quality: str | None = None,
+        evidence_usability: str | None = None,
+        annotator_id: str | None = None,
+        notes: str | None = None,
+    ) -> SpanQualityLabel:
+        """Create a new span quality label."""
+        label = SpanQualityLabel(
+            id=_generate_id("sql"),
+            span_id=span_id,
+            extraction_quality=extraction_quality,
+            grounding_quality=grounding_quality,
+            evidence_usability=evidence_usability,
+            annotator_id=annotator_id,
+            notes=notes,
+        )
+        return self.upsert_span_quality_label(label)
+
+    def get_span_quality_label(self, label_id: str) -> SpanQualityLabel | None:
+        """Get a span quality label by ID."""
+        with session_scope() as session:
+            model = session.execute(
+                select(SpanQualityLabelModel).where(SpanQualityLabelModel.id == label_id)
+            ).scalar_one_or_none()
+            if model:
+                return _span_quality_label_from_model(model)
+        return None
+
+    def get_span_quality_labels_for_span(self, span_id: str) -> list[SpanQualityLabel]:
+        """Get all quality labels for a span."""
+        with session_scope() as session:
+            stmt = (
+                select(SpanQualityLabelModel)
+                .where(SpanQualityLabelModel.span_id == span_id)
+                .order_by(SpanQualityLabelModel.created_at)
+            )
+            models = session.execute(stmt).scalars().all()
+            return [_span_quality_label_from_model(m) for m in models]
+
+    def list_span_quality_labels(
+        self,
+        span_id: str | None = None,
+        extraction_quality: str | None = None,
+        grounding_quality: str | None = None,
+        evidence_usability: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[list[SpanQualityLabel], int]:
+        """List span quality labels with filters."""
+        with session_scope() as session:
+            stmt = select(SpanQualityLabelModel)
+            if span_id:
+                stmt = stmt.where(SpanQualityLabelModel.span_id == span_id)
+            if extraction_quality:
+                stmt = stmt.where(SpanQualityLabelModel.extraction_quality == extraction_quality)
+            if grounding_quality:
+                stmt = stmt.where(SpanQualityLabelModel.grounding_quality == grounding_quality)
+            if evidence_usability:
+                stmt = stmt.where(SpanQualityLabelModel.evidence_usability == evidence_usability)
+
+            # Count total
+            from sqlalchemy import func
+
+            count_stmt = select(func.count()).select_from(stmt.subquery())
+            total = session.execute(count_stmt).scalar() or 0
+
+            # Apply pagination
+            stmt = stmt.order_by(SpanQualityLabelModel.created_at.desc())
+            stmt = stmt.offset(offset).limit(limit)
+            models = session.execute(stmt).scalars().all()
+            return [_span_quality_label_from_model(m) for m in models], total
+
+    def delete_span_quality_label(self, label_id: str) -> bool:
+        """Delete a span quality label by ID."""
+        with session_scope() as session:
+            model = session.execute(
+                select(SpanQualityLabelModel).where(SpanQualityLabelModel.id == label_id)
+            ).scalar_one_or_none()
+            if model:
+                session.delete(model)
+                return True
+        return False
+
     # --- Utility methods ---
 
     def count_records(self) -> dict[str, int]:
@@ -981,6 +1384,8 @@ class GoldStore:
             "retrieval_judgment": RetrievalJudgmentModel,
             "forage_strategy": ForageStrategyModel,
             "forage_query": ForageQueryModel,
+            "document_quality_label": DocumentQualityLabelModel,
+            "span_quality_label": SpanQualityLabelModel,
         }
         counts = {}
         with session_scope() as session:

@@ -59,6 +59,11 @@ class LoadedDocument:
     source_text_char_len: int
     extraction_status: LoadedExtractionStatus | None = None
     validation_warnings: list[str] = field(default_factory=list)
+    # CC-3: MBFC Source Reliability metadata
+    publisher_name: str | None = None
+    publisher_mbfc_key: str | None = None
+    mbfc_factual_rating: str | None = None
+    mbfc_bias_rating: str | None = None
 
     def verify_hash(self) -> bool:
         """Verify source_text_hash matches actual source_text."""
@@ -80,6 +85,11 @@ class LoadedSpan:
     claimset_orientation: str | None = None
     relevance_score: float | None = None
     verbatim_span: str | None = None  # CC-10a: exact source slice for scoring
+    # CC-3: Claim Attribution metadata
+    claim_attribution: dict[str, Any] | None = None
+    claimant_name: str | None = None
+    claimant_key: str | None = None
+    attribution_type: str | None = None
 
     def verify_against_source(self, source_text: str) -> bool:
         """Verify verbatim_span matches source_text slice at offset."""
@@ -122,6 +132,9 @@ class LoadedFixture:
     extraction_status: LoadedExtractionStatus | None = None
     forage_strategy_id: str | None = None
     forage_query_id: str | None = None
+    # CC-3: Search Target Contract
+    search_target_preset: str | None = None
+    target_metrics: dict[str, Any] | None = None
 
     # Indexed lookups (built on load)
     _documents_by_id: dict[str, LoadedDocument] = field(default_factory=dict, repr=False)
@@ -187,6 +200,11 @@ def _parse_document(data: dict[str, Any]) -> LoadedDocument:
         source_text_char_len=data.get("source_text_char_len", 0),
         extraction_status=_parse_extraction_status(data.get("extraction_status")),
         validation_warnings=data.get("validation_warnings", []),
+        # CC-3: MBFC Source Reliability metadata
+        publisher_name=data.get("publisher_name"),
+        publisher_mbfc_key=data.get("publisher_mbfc_key"),
+        mbfc_factual_rating=data.get("mbfc_factual_rating"),
+        mbfc_bias_rating=data.get("mbfc_bias_rating"),
     )
 
 
@@ -204,6 +222,11 @@ def _parse_span(data: dict[str, Any]) -> LoadedSpan:
         claimset_orientation=data.get("claimset_orientation"),
         relevance_score=data.get("relevance_score"),
         verbatim_span=data.get("verbatim_span"),
+        # CC-3: Claim Attribution metadata
+        claim_attribution=data.get("claim_attribution"),
+        claimant_name=data.get("claimant_name"),
+        claimant_key=data.get("claimant_key"),
+        attribution_type=data.get("attribution_type"),
     )
 
 
@@ -279,6 +302,10 @@ def load_fixture(
     # Parse retrieval results
     retrieval_results = [_parse_retrieval_result(r) for r in data.get("retrieval_results", [])]
 
+    # CC-3: Parse search_target if present
+    search_target = data.get("search_target") or {}
+    search_target_preset = search_target.get("preset") if isinstance(search_target, dict) else None
+
     return LoadedFixture(
         fixture_id=data.get("fixture_id", ""),
         capture_mode=data.get("capture_mode", ""),
@@ -293,6 +320,9 @@ def load_fixture(
         extraction_status=_parse_extraction_status(data.get("extraction_status")),
         forage_strategy_id=data.get("forage_strategy_id"),
         forage_query_id=data.get("forage_query_id"),
+        # CC-3: Search Target Contract
+        search_target_preset=search_target_preset or data.get("search_target_preset"),
+        target_metrics=data.get("target_metrics"),
     )
 
 

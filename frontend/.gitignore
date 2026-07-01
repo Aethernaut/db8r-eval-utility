@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Generated API client (regenerate with npm run generate-api)
+src/api/generated/
+src/api/schemas/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+
+# Test
+coverage/
+
+# Playwright
+test-results/
+playwright-report/

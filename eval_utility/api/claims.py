@@ -20,8 +20,12 @@ from .schemas import (
 router = APIRouter()
 
 
-def _claim_to_response(claim: Claim) -> ClaimResponse:
+def _claim_to_response(claim: Claim, store: GoldStore) -> ClaimResponse:
     """Convert Claim to response model."""
+    # Get retrieval_complete from annotation state
+    annotation_state = store.get_claim_annotation_state(claim.claim_id)
+    retrieval_complete = annotation_state.retrieval_complete if annotation_state else False
+
     return ClaimResponse(
         claim_id=claim.claim_id,
         text=claim.text,
@@ -29,6 +33,7 @@ def _claim_to_response(claim: Claim) -> ClaimResponse:
         proof_standard=claim.proof_standard,
         split=claim.split,
         notes=claim.notes,
+        retrieval_complete=retrieval_complete,
         created_at=claim.created_at,
         updated_at=claim.updated_at,
     )
@@ -46,6 +51,17 @@ def _link_to_response(link: ClaimDocumentLink) -> ClaimDocumentLinkResponse:
     )
 
 
+@router.get("/next", response_model=ClaimResponse)
+def get_next_claim(
+    store: GoldStore = Depends(get_store),
+) -> ClaimResponse:
+    """Get the next claim that needs retrieval judgment (retrieval_complete=False)."""
+    claim = store.get_next_incomplete_claim()
+    if claim is None:
+        raise HTTPException(status_code=404, detail="No incomplete claims found")
+    return _claim_to_response(claim, store)
+
+
 @router.get("", response_model=ClaimListResponse)
 def list_claims(
     split: str | None = Query(None),
@@ -59,7 +75,7 @@ def list_claims(
     total = len(claims)
     paginated = claims[offset : offset + limit]
     return ClaimListResponse(
-        claims=[_claim_to_response(c) for c in paginated],
+        claims=[_claim_to_response(c, store) for c in paginated],
         total=total,
     )
 
@@ -79,7 +95,7 @@ def create_claim(
         notes=data.notes,
     )
     claim = store.upsert_claim(claim)
-    return _claim_to_response(claim)
+    return _claim_to_response(claim, store)
 
 
 @router.get("/{claim_id}", response_model=ClaimResponse)
@@ -91,7 +107,7 @@ def get_claim(
     claim = store.get_claim(claim_id)
     if claim is None:
         raise HTTPException(status_code=404, detail=f"Claim {claim_id} not found")
-    return _claim_to_response(claim)
+    return _claim_to_response(claim, store)
 
 
 @router.put("/{claim_id}", response_model=ClaimResponse)
@@ -117,8 +133,12 @@ def update_claim(
     if data.notes is not None:
         claim.notes = data.notes
 
+    # Handle retrieval_complete flag
+    if data.retrieval_complete is not None:
+        store.set_retrieval_complete(claim_id, data.retrieval_complete)
+
     claim = store.upsert_claim(claim)
-    return _claim_to_response(claim)
+    return _claim_to_response(claim, store)
 
 
 @router.delete("/{claim_id}", status_code=204)
